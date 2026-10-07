@@ -144,3 +144,17 @@ RelayView 0.2.0 adds a persistent rotating logging system aimed at diagnosing na
 - Credentials and common secret query parameters are redacted from stream URLs before they are written to logs.
 
 For reproducing a grid crash, set **Logging → Debug**, reproduce the crash, then send `relayview.log` plus the newest `crash-*.log` from the log folder.
+
+## v0.2.1 — VLC lifecycle hardening
+
+RelayView 0.2.1 focuses on the native libVLC lifecycle shared by grid transitions and application/update shutdown.
+
+- Detaches libVLC from its Qt/native video window before stopping playback.
+- Logs detach, native stop, media clear, player release, and libVLC instance release as distinct lifecycle steps.
+- Tears down the single-view player before changing grid widgets during single → grid transitions.
+- Fully releases grid players before switching back to single view, then reattaches the primary player to its video host.
+- Uses one idempotent VLC backend shutdown path for normal close and update-close handoff.
+- Invalidates pending grid startup callbacks when grid playback is stopped/released.
+- Adds lifecycle ordering tests to prevent regressions.
+
+For troubleshooting, set Logging → Debug before reproducing a grid or update issue. The last lifecycle message before a native process failure should now identify the exact libVLC operation involved.

@@ -544,6 +544,15 @@ class MainWindow(QMainWindow):
 
     def activate_grid(self, rows: int | None = None, columns: int | None = None, reconfigure: bool = False) -> None:
         log.info("activate_grid begin rows=%s columns=%s reconfigure=%s view_mode=%s", rows, columns, reconfigure, self._view_mode)
+
+        # The single player must be detached and fully stopped while its QWidget/HWND
+        # is still alive. Only after VLC has returned from stop() do we rebuild/show
+        # grid widgets. This avoids native video-output teardown racing Qt window changes.
+        if self.backend and self._view_mode == "single":
+            log.info("Transition single->grid: quiescing primary before grid changes")
+            self.backend.quiesce_primary()
+            log.info("Transition single->grid: primary quiesced")
+
         if rows is not None and columns is not None:
             existing = self.grid_view.stream_assignments()
             count = rows * columns
@@ -557,18 +566,19 @@ class MainWindow(QMainWindow):
                     if assignments[i] is None and unused:
                         assignments[i] = unused.pop(0)
 
+            log.info("Transition grid: configuring widgets after playback teardown")
             self.grid_view.configure(rows, columns, assignments)
             self.settings.setValue("grid_rows", rows)
             self.settings.setValue("grid_columns", columns)
 
-        if self.backend:
-            self.backend.stop_primary()
+        log.debug("Transition single->grid: switching viewer stack")
         self.viewer_stack.setCurrentWidget(self.grid_view)
         self._view_mode = "grid"
         self.settings.setValue("view_mode", "grid")
         self.grid_view.set_volume(self.volume_slider.value())
         if self.backend:
             self.grid_view.set_muted(self.backend.is_muted())
+        log.info("Transition single->grid: starting assigned grid players")
         self.grid_view.play_all()
         self.stream_title.setText(f"Grid {self.grid_view.rows}×{self.grid_view.columns}")
         active = sum(1 for stream in self.grid_view.stream_assignments() if stream)
@@ -586,7 +596,12 @@ class MainWindow(QMainWindow):
     def show_single_view(self) -> None:
         if self._view_mode == "single":
             return
-        self.grid_view.stop_all()
+        log.info("Transition grid->single begin")
+        # Release grid players completely while their host widgets still exist.
+        # This mirrors the single->grid path and prevents native VLC video output
+        # from retaining HWNDs after Qt changes the visible page.
+        self.grid_view.release_all_players()
+        log.info("Transition grid->single: grid players released")
         self.viewer_stack.setCurrentWidget(self.video_frame)
         self._view_mode = "single"
         self.settings.setValue("view_mode", "single")
@@ -596,6 +611,8 @@ class MainWindow(QMainWindow):
             self.stream_title.setText(stream.name)
             self.status_text.setText("Connecting…")
             self.status_badge.setText("Connecting")
+            log.debug("Transition grid->single: reattaching primary video host hwnd=%s", int(self.video_frame.winId()))
+            self.backend.attach_video(int(self.video_frame.winId()))
             self.backend.play(stream.url)
             self.pause_btn.setEnabled(True)
             self.mute_btn.setEnabled(True)
@@ -605,6 +622,7 @@ class MainWindow(QMainWindow):
             self.status_badge.setText("Idle")
         self._set_view_button_state()
         self._update_nav_buttons()
+        log.info("Transition grid->single complete")
 
     def _set_view_button_state(self) -> None:
         single_active = self._view_mode == "single"
@@ -771,8 +789,9 @@ class MainWindow(QMainWindow):
             self._save_grid_state()
             self.settings.sync()
             if self.backend:
-                log.info("Stopping backend before update-close handoff")
-                self.backend.stop()
+                log.info("Shutting down backend before update-close handoff")
+                self.backend.shutdown()
+                log.info("Backend shutdown returned before update-close handoff")
 
             self.status_text.setText("Update ready — closing RelayView…")
             log.warning("Closing RelayView with downloaded update pending")
@@ -786,7 +805,9 @@ class MainWindow(QMainWindow):
         self.settings.setValue("geometry", self.saveGeometry())
         self._save_grid_state()
         if self.backend:
-            self.backend.stop()
+            log.info("closeEvent: VLC backend shutdown begin")
+            self.backend.shutdown()
+            log.info("closeEvent: VLC backend shutdown returned")
         super().closeEvent(event)
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802 - Qt API

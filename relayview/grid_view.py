@@ -363,10 +363,26 @@ class GridView(QWidget):
                 QTimer.singleShot(75 + (offset * 35), lambda t=tile, g=generation: self._start_tile(t, g))
 
     def stop_all(self) -> None:
-        log.info("Grid stop_all tiles=%s", len(self.tiles))
+        log.info("Grid stop_all begin tiles=%s generation=%s", len(self.tiles), self._generation)
+        self._generation += 1
         for tile in self.tiles:
             if tile.player:
-                tile.player.stop()
+                log.debug("Grid tile stop begin tile=%s player=%s", tile.index, id(tile.player))
+                tile.player.stop(detach=True)
+                log.debug("Grid tile stop complete tile=%s player=%s", tile.index, id(tile.player))
+        log.info("Grid stop_all complete generation=%s", self._generation)
+
+    def release_all_players(self) -> None:
+        log.info("Grid release_all_players begin tiles=%s generation=%s", len(self.tiles), self._generation)
+        self._generation += 1
+        for tile in self.tiles:
+            if tile.player and self.backend:
+                player = tile.player
+                tile.player = None
+                log.debug("Grid tile release begin tile=%s player=%s", tile.index, id(player))
+                self.backend.release_player(player)
+                log.debug("Grid tile release complete tile=%s player=%s", tile.index, id(player))
+        log.info("Grid release_all_players complete generation=%s", self._generation)
 
     def toggle_pause_all(self) -> bool:
         self._paused = not self._paused

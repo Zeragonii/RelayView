@@ -84,9 +84,43 @@ class VLCPlayer:
         log.debug("Set paused player=%s paused=%s", id(self), paused)
         self.player.set_pause(1 if paused else 0)
 
-    def stop(self) -> None:
-        log.debug("Stop player=%s", id(self))
+    def detach_video(self) -> None:
+        if self._attached_handle is None:
+            log.debug("Detach skipped player=%s already_detached=True", id(self))
+            return
+        log.debug("Detach begin player=%s hwnd=%s platform=%s", id(self), self._attached_handle, sys.platform)
+        if sys.platform.startswith("win"):
+            self.player.set_hwnd(0)
+        elif sys.platform == "darwin":
+            self.player.set_nsobject(0)
+        else:
+            self.player.set_xwindow(0)
+        self._attached_handle = None
+        log.debug("Detach complete player=%s", id(self))
+
+    def stop(self, *, detach: bool = True) -> None:
+        log.debug("Stop requested player=%s detach=%s", id(self), detach)
+        if detach:
+            self.detach_video()
+        log.debug("Native stop begin player=%s", id(self))
         self.player.stop()
+        log.debug("Native stop returned player=%s", id(self))
+
+    def release(self) -> None:
+        log.debug("Player release begin player=%s", id(self))
+        self.stop(detach=True)
+        try:
+            log.debug("Clearing media player=%s", id(self))
+            self.player.set_media(None)
+            log.debug("Media cleared player=%s", id(self))
+        except Exception:
+            log.exception("set_media(None) failed player=%s", id(self))
+        try:
+            log.debug("Native release begin player=%s", id(self))
+            self.player.release()
+            log.debug("Native release returned player=%s", id(self))
+        except Exception:
+            log.exception("native release failed player=%s", id(self))
 
     def set_muted(self, muted: bool) -> None:
         self.player.audio_set_mute(muted)
@@ -114,6 +148,7 @@ class VLCBackend:
         self.instance = vlc.Instance("--no-video-title-show", "--quiet", "--network-caching=250", "--clock-jitter=0")
         self.primary = VLCPlayer(self.instance, self.vlc, status_callback)
         self._extra_players: list[VLCPlayer] = []
+        self._shutdown = False
 
     @property
     def player(self):
@@ -128,25 +163,52 @@ class VLCBackend:
     def release_player(self, player: VLCPlayer) -> None:
         log.debug("Releasing extra player=%s attached_hwnd=%s", id(player), player._attached_handle)
         try:
-            player.stop()
-            player._attached_handle = None
-            try: player.player.set_media(None)
-            except Exception: log.exception("set_media(None) failed player=%s", id(player))
-            try: player.player.release()
-            except Exception: log.exception("native release failed player=%s", id(player))
+            player.release()
         finally:
             if player in self._extra_players:
                 self._extra_players.remove(player)
             log.debug("Extra player released=%s remaining=%s", id(player), len(self._extra_players))
 
-    def attach_video(self, widget_id: int) -> None: self.primary.attach_video(widget_id)
-    def play(self, url: str) -> None: self.primary.play(url)
-    def toggle_pause(self) -> bool: return self.primary.toggle_pause()
-    def stop_primary(self) -> None: self.primary.stop()
+    def attach_video(self, widget_id: int) -> None:
+        self.primary.attach_video(widget_id)
+
+    def play(self, url: str) -> None:
+        self.primary.play(url)
+
+    def toggle_pause(self) -> bool:
+        return self.primary.toggle_pause()
+
+    def quiesce_primary(self) -> None:
+        log.info("Quiesce primary begin player=%s", id(self.primary))
+        self.primary.stop(detach=True)
+        log.info("Quiesce primary complete player=%s", id(self.primary))
+
+    def stop_primary(self) -> None:
+        self.quiesce_primary()
+
     def stop(self) -> None:
         log.info("Stopping VLC backend extra_players=%s", len(self._extra_players))
-        self.primary.stop()
-        for player in list(self._extra_players): player.stop()
+        self.primary.stop(detach=True)
+        for player in list(self._extra_players):
+            player.stop(detach=True)
+        log.info("VLC backend stop complete")
+
+    def shutdown(self) -> None:
+        if self._shutdown:
+            log.debug("VLC backend shutdown skipped already_shutdown=True")
+            return
+        self._shutdown = True
+        log.warning("VLC backend shutdown begin extra_players=%s", len(self._extra_players))
+        for player in list(self._extra_players):
+            self.release_player(player)
+        self.primary.release()
+        try:
+            log.debug("libVLC instance release begin")
+            self.instance.release()
+            log.debug("libVLC instance release returned")
+        except Exception:
+            log.exception("libVLC instance release failed")
+        log.warning("VLC backend shutdown complete")
     def set_muted(self, muted: bool) -> None:
         self.primary.set_muted(muted)
         for player in self._extra_players: player.set_muted(muted)
