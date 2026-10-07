@@ -120,6 +120,17 @@ class VLCBackend:
     def release_player(self, player: VLCPlayer) -> None:
         try:
             player.stop()
+            # Explicitly release the native media-player object before its Qt HWND
+            # is destroyed. Relying on Python GC here can leave libVLC rendering
+            # into a stale window during grid reconfiguration.
+            try:
+                player.player.set_media(None)
+            except Exception:
+                pass
+            try:
+                player.player.release()
+            except Exception:
+                pass
         finally:
             if player in self._extra_players:
                 self._extra_players.remove(player)

@@ -43,8 +43,8 @@ The packaged Windows build includes a trimmed VLC runtime, so a separate VLC ins
 Update the version in both `pyproject.toml` and `relayview/__init__.py`, commit it, then tag that commit:
 
 ```bash
-git tag v0.1.6
-git push origin v0.1.6
+git tag v0.1.7
+git push origin v0.1.7
 ```
 
 GitHub Actions will test the project, build the Windows application, create Velopack installer/update packages, generate a delta against the previous Velopack release when possible, and publish the GitHub Release.
@@ -74,7 +74,16 @@ MIT. VLC/libVLC and Qt/PySide6 retain their respective upstream licenses.
 
 
 
-## v0.1.6
+## v0.1.7
+
+### Grid stability hotfix
+
+- Fixed duplicate/deferred VLC attachment races when opening or resizing grids.
+- Grid streams now start only after Qt has created stable native video windows.
+- Grid startup is staggered slightly to avoid opening many RTSP decoders simultaneously.
+- Discarded grid VLC players are explicitly released before their Qt widgets are destroyed.
+- Stale deferred callbacks are invalidated when the grid is rebuilt.
+
 
 - Added a built-in M3U playlist editor.
 - Rename streams without manually editing the playlist file.
