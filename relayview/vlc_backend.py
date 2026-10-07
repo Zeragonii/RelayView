@@ -32,6 +32,7 @@ class VLCPlayer:
         self._status_callback = status_callback or (lambda _status: None)
         self.player = self.instance.media_player_new()
         self._events = self.player.event_manager()
+        self._attached_handle: int | None = None
         self._events.event_attach(self.vlc.EventType.MediaPlayerOpening, self._event("Connecting…"))
         self._events.event_attach(self.vlc.EventType.MediaPlayerPlaying, self._event("Live"))
         self._events.event_attach(self.vlc.EventType.MediaPlayerPaused, self._event("Paused"))
@@ -44,12 +45,18 @@ class VLCPlayer:
         return callback
 
     def attach_video(self, widget_id: int) -> None:
+        widget_id = int(widget_id)
+        if self._attached_handle == widget_id:
+            return
+        # libVLC expects the target native window to remain valid for the life
+        # of playback. Do not repeatedly rebind a player to the same HWND.
         if sys.platform.startswith("win"):
             self.player.set_hwnd(widget_id)
         elif sys.platform == "darwin":
             self.player.set_nsobject(widget_id)
         else:
             self.player.set_xwindow(widget_id)
+        self._attached_handle = widget_id
 
     def play(self, url: str) -> None:
         media = self.instance.media_new(url)
@@ -123,6 +130,7 @@ class VLCBackend:
             # Explicitly release the native media-player object before its Qt HWND
             # is destroyed. Relying on Python GC here can leave libVLC rendering
             # into a stale window during grid reconfiguration.
+            player._attached_handle = None
             try:
                 player.player.set_media(None)
             except Exception:

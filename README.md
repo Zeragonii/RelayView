@@ -1,5 +1,7 @@
 # RelayView
 
+> v0.1.9 grid-stability hotfix: Windows libVLC video hosts now receive the required native window styles, duplicate HWND attachment is prevented, and native crash diagnostics are written under `%LOCALAPPDATA%\RelayView\logs`.
+
 RelayView is a small, modern desktop viewer for M3U/M3U8 camera playlists. It is designed around Frigate/go2rtc-style restreams but works with ordinary VLC-compatible stream URLs too.
 
 ## Features

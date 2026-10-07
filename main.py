@@ -4,6 +4,10 @@ import sys
 
 import velopack
 
+from relayview.diagnostics import enable_crash_logging
+
+enable_crash_logging()
+
 # Velopack must run before normal application startup. It may handle an install/update
 # event and exit/restart the process before Qt is initialised.
 velopack.App().run()

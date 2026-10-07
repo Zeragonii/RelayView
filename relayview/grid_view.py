@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 from PySide6.QtCore import QMimeData, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QDrag, QMouseEvent
 from PySide6.QtWidgets import (
@@ -19,6 +21,33 @@ from .models import Stream
 from .vlc_backend import VLCBackend, VLCPlayer
 
 GRID_MIME = "application/x-relayview-grid-tile"
+
+
+def _prepare_windows_video_host(widget: QWidget) -> int:
+    """Return a libVLC-safe native HWND for a Qt video host on Windows."""
+    hwnd = int(widget.winId())
+    if not sys.platform.startswith("win"):
+        return hwnd
+
+    # libVLC documents WS_CLIPCHILDREN as required for set_hwnd().
+    # WS_CLIPSIBLINGS is also appropriate for a tiled child-window layout.
+    import ctypes
+
+    GWL_STYLE = -16
+    WS_CLIPCHILDREN = 0x02000000
+    WS_CLIPSIBLINGS = 0x04000000
+    user32 = ctypes.windll.user32
+    get_style = user32.GetWindowLongPtrW
+    set_style = user32.SetWindowLongPtrW
+    get_style.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    get_style.restype = ctypes.c_ssize_t
+    set_style.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t]
+    set_style.restype = ctypes.c_ssize_t
+    style = get_style(hwnd, GWL_STYLE)
+    required = WS_CLIPCHILDREN | WS_CLIPSIBLINGS
+    if (style & required) != required:
+        set_style(hwnd, GWL_STYLE, style | required)
+    return hwnd
 
 
 class GridSizeDialog(QDialog):
@@ -249,7 +278,7 @@ class GridView(QWidget):
             return
         # winId() is requested only after the tile is visible and the event loop has
         # had a chance to create a stable native HWND. Attach exactly once per start.
-        hwnd = int(tile.video.winId())
+        hwnd = _prepare_windows_video_host(tile.video)
         player.attach_video(hwnd)
         player.play(tile.stream.url)
         player.set_volume(self._volume)
@@ -280,7 +309,7 @@ class GridView(QWidget):
         if self.isVisible():
             player = self._ensure_player(tile)
             if player:
-                player.attach_video(int(tile.video.winId()))
+                player.attach_video(_prepare_windows_video_host(tile.video))
                 player.play(stream.url)
                 player.set_volume(self._volume)
                 player.set_muted(self._muted)
