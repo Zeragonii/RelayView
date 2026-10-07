@@ -42,8 +42,8 @@ The packaged Windows build includes a trimmed VLC runtime, so a separate VLC ins
 Update the version in both `pyproject.toml` and `relayview/__init__.py`, commit it, then tag that commit:
 
 ```bash
-git tag v0.1.4
-git push origin v0.1.4
+git tag v0.1.5
+git push origin v0.1.5
 ```
 
 GitHub Actions will test the project, build the Windows application, create Velopack installer/update packages, generate a delta against the previous Velopack release when possible, and publish the GitHub Release.
@@ -72,7 +72,7 @@ pytest -q
 MIT. VLC/libVLC and Qt/PySide6 retain their respective upstream licenses.
 
 
-## v0.1.4
+## v0.1.5
 
 - Added configurable multi-camera grid view with independent row/column sizing (up to 32×32).
 - Existing feeds are preserved when resizing a grid; newly added cells are populated from unused playlist cameras when available.

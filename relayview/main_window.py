@@ -674,14 +674,21 @@ class MainWindow(QMainWindow):
             if answer != QMessageBox.StandardButton.Yes:
                 return
 
-            try:
-                self.settings.sync()
-                if self.backend:
-                    self.backend.stop()
-                apply_pending_update()
-                QApplication.instance().quit()
-            except Exception as exc:
-                QMessageBox.critical(self, "Could not apply update", str(exc))
+            self.settings.sync()
+            if self.backend:
+                self.backend.stop()
+
+            # Return control to Qt for one event-loop turn so the dialog closes
+            # and the UI can repaint before Velopack exits/restarts the process.
+            def apply_now() -> None:
+                try:
+                    self.status_text.setText("Restarting to install update…")
+                    apply_pending_update()
+                except Exception as exc:
+                    QMessageBox.critical(self, "Could not apply update", str(exc))
+                    self.status_text.setText("Update install failed")
+
+            QTimer.singleShot(0, apply_now)
 
         thread.downloaded.connect(finished)
         thread.start()
