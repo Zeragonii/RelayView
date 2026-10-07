@@ -26,6 +26,8 @@ from PySide6.QtWidgets import (
 from .models import Stream
 from .playlist import load_m3u
 from .vlc_backend import VLCBackend
+from .updater import UpdateCheckThread, UpdateDownloadThread, apply_pending_update
+from . import __version__
 
 
 class MainWindow(QMainWindow):
@@ -48,6 +50,8 @@ class MainWindow(QMainWindow):
         self.current_index = -1
         self._fullscreen = False
         self._sidebar_width = 288
+        self._update_check_thread = None
+        self._update_download_thread = None
 
         self.vlc_status.connect(self._set_status)
         try:
@@ -59,6 +63,8 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._bind_shortcuts()
         self._restore()
+        if self.settings.value("auto_update_check", True, type=bool):
+            QTimer.singleShot(3500, lambda: self.check_for_updates(silent=True))
 
     def _fatal_player_error(self, message: str) -> None:
         QMessageBox.critical(self, "Playback engine unavailable", message)
@@ -226,6 +232,22 @@ class MainWindow(QMainWindow):
         full_action.setShortcut(QKeySequence("F"))
         full_action.triggered.connect(self.toggle_fullscreen)
         menu.addAction(full_action)
+        menu.addSeparator()
+
+        update_action = QAction("Check for updates…", self)
+        update_action.triggered.connect(lambda: self.check_for_updates(silent=False))
+        menu.addAction(update_action)
+
+        auto_update_action = QAction("Check for updates automatically", self)
+        auto_update_action.setCheckable(True)
+        auto_update_action.setChecked(self.settings.value("auto_update_check", True, type=bool))
+        auto_update_action.toggled.connect(lambda checked: self.settings.setValue("auto_update_check", checked))
+        menu.addAction(auto_update_action)
+
+        about_action = QAction(f"About RelayView {__version__}", self)
+        about_action.setEnabled(False)
+        menu.addAction(about_action)
+
         menu.exec(self.sidebar.mapToGlobal(self.sidebar.rect().topRight()))
 
     def open_playlist_dialog(self) -> None:
@@ -368,6 +390,81 @@ class MainWindow(QMainWindow):
         path = self.settings.value("playlist_path", "")
         if path and Path(str(path)).exists():
             QTimer.singleShot(150, lambda: self.load_playlist(str(path), restore_stream=True))
+
+    def check_for_updates(self, silent: bool = False) -> None:
+        if self._update_check_thread and self._update_check_thread.isRunning():
+            if not silent:
+                self.status_text.setText("Already checking for updates…")
+            return
+
+        if not silent:
+            self.status_text.setText("Checking for updates…")
+
+        thread = UpdateCheckThread(self)
+        self._update_check_thread = thread
+
+        def finished(available: bool, error: str) -> None:
+            if error:
+                if not silent:
+                    QMessageBox.warning(self, "Update check failed", error)
+                    self.status_text.setText("Update check failed")
+                return
+            if not available:
+                if not silent:
+                    QMessageBox.information(self, "RelayView", "You're already running the latest version.")
+                    self.status_text.setText("RelayView is up to date")
+                return
+
+            answer = QMessageBox.question(
+                self,
+                "RelayView update available",
+                "A newer version of RelayView is available. Download it now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                self._download_update()
+
+        thread.finished_check.connect(finished)
+        thread.start()
+
+    def _download_update(self) -> None:
+        if self._update_download_thread and self._update_download_thread.isRunning():
+            return
+
+        self.status_text.setText("Downloading update… 0%")
+        thread = UpdateDownloadThread(self)
+        self._update_download_thread = thread
+        thread.progress.connect(lambda value: self.status_text.setText(f"Downloading update… {value}%"))
+
+        def finished(ok: bool, error: str) -> None:
+            if not ok:
+                QMessageBox.warning(self, "Update failed", error or "The update could not be downloaded.")
+                self.status_text.setText("Update failed")
+                return
+
+            self.status_text.setText("Update ready")
+            answer = QMessageBox.question(
+                self,
+                "Update ready",
+                "The update has been downloaded. Restart RelayView now to install it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+
+            try:
+                self.settings.sync()
+                if self.backend:
+                    self.backend.stop()
+                apply_pending_update()
+                QApplication.instance().quit()
+            except Exception as exc:
+                QMessageBox.critical(self, "Could not apply update", str(exc))
+
+        thread.downloaded.connect(finished)
+        thread.start()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
         self.settings.setValue("geometry", self.saveGeometry())

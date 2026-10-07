@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtWidgets import QApplication
+import velopack
 
-from relayview.main_window import MainWindow
-from relayview.theme import APP_STYLE
+# Velopack must run before normal application startup. It may handle an install/update
+# event and exit/restart the process before Qt is initialised.
+velopack.App().run()
+
+from PySide6.QtWidgets import QApplication  # noqa: E402
+
+from relayview.main_window import MainWindow  # noqa: E402
+from relayview.theme import APP_STYLE  # noqa: E402
 
 
 def main() -> int:
