@@ -3,7 +3,7 @@ APP_STYLE = r"""
     font-family: "Segoe UI", "Inter", sans-serif;
     font-size: 10pt;
 }
-QMainWindow, QWidget#root {
+QMainWindow, QWidget#root, QDialog {
     background: #0b0e14;
     color: #e8edf5;
 }
@@ -19,7 +19,7 @@ QLabel#brand {
 QLabel#subtle, QLabel#statusText {
     color: #8794a8;
 }
-QLineEdit {
+QLineEdit, QTextEdit {
     background: #161d28;
     border: 1px solid #263142;
     border-radius: 10px;
@@ -27,7 +27,15 @@ QLineEdit {
     color: #eaf0f8;
     selection-background-color: #4c7dff;
 }
-QLineEdit:focus { border: 1px solid #4c7dff; }
+QLineEdit:focus, QTextEdit:focus { border: 1px solid #4c7dff; }
+QLabel#dialogTitle {
+    font-size: 16pt;
+    font-weight: 700;
+    color: #f4f7fb;
+}
+QCheckBox { color: #dbe4f0; spacing: 8px; }
+QCheckBox::indicator { width: 17px; height: 17px; }
+QListWidget#playlistEditorList::item { padding: 10px; }
 QListWidget {
     background: transparent;
     border: none;

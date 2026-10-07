@@ -1,7 +1,7 @@
 #EXTM3U
-#EXTINF:-1 group-title="Outside",Front Door
+#EXTINF:-1 group-title="Outside" relayview-favorite="1" relayview-notes="Main entrance",Front Door
 rtsp://192.168.1.50:8554/front_door
 #EXTINF:-1 group-title="Outside",Driveway
 rtsp://192.168.1.50:8554/driveway
-#EXTINF:-1 group-title="Inside",Hallway
-rtsp://192.168.1.50:8554/hallway
+#EXTINF:-1 group-title="Outside",Garden
+rtsp://192.168.1.50:8554/garden

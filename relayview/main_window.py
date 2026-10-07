@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 from .models import Stream
 from .grid_view import GridSizeDialog, GridView
 from .playlist import load_m3u
+from .playlist_editor import PlaylistEditorDialog
 from .vlc_backend import VLCBackend
 from .updater import UpdateCheckThread, UpdateDownloadThread, apply_pending_update
 from . import __version__
@@ -120,9 +121,17 @@ class MainWindow(QMainWindow):
         self.camera_list.itemClicked.connect(self._activate_item)
         side.addWidget(self.camera_list, 1)
 
+        playlist_buttons = QHBoxLayout()
+        playlist_buttons.setSpacing(8)
         open_btn = QPushButton("Open playlist", objectName="primaryButton")
         open_btn.clicked.connect(self.open_playlist_dialog)
-        side.addWidget(open_btn)
+        playlist_buttons.addWidget(open_btn, 1)
+        self.edit_playlist_btn = QPushButton("Edit…")
+        self.edit_playlist_btn.setToolTip("Rename, reorder and edit stream metadata")
+        self.edit_playlist_btn.setEnabled(False)
+        self.edit_playlist_btn.clicked.connect(self.edit_playlist)
+        playlist_buttons.addWidget(self.edit_playlist_btn)
+        side.addLayout(playlist_buttons)
 
         self.splitter.addWidget(self.sidebar)
 
@@ -274,6 +283,11 @@ class MainWindow(QMainWindow):
         reload_action.setEnabled(bool(self.settings.value("playlist_path", "")))
         reload_action.triggered.connect(self.reload_playlist)
         menu.addAction(reload_action)
+
+        edit_action = QAction("Edit playlist…", self)
+        edit_action.setEnabled(bool(self.streams) and bool(self.settings.value("playlist_path", "")))
+        edit_action.triggered.connect(self.edit_playlist)
+        menu.addAction(edit_action)
         menu.addSeparator()
 
         sidebar_action = QAction("Toggle camera list", self)
@@ -339,6 +353,7 @@ class MainWindow(QMainWindow):
         self.playlist_label.setText(Path(path).name)
         self.playlist_label.setToolTip(path)
         self.current_index = -1
+        self.edit_playlist_btn.setEnabled(True)
         self._refresh_list()
         self._update_nav_buttons()
         self.status_text.setText(f"{len(streams)} streams loaded")
@@ -355,18 +370,33 @@ class MainWindow(QMainWindow):
         if path:
             self.load_playlist(str(path), restore_stream=True)
 
+    def edit_playlist(self) -> None:
+        path = str(self.settings.value("playlist_path", ""))
+        if not path or not self.streams:
+            QMessageBox.information(self, "No playlist", "Open a playlist before editing it.")
+            return
+        dialog = PlaylistEditorDialog(path, self.streams, self)
+        if dialog.exec() == dialog.DialogCode.Accepted:
+            self.settings.setValue("playlist_path", dialog.playlist_path)
+            self.load_playlist(dialog.playlist_path, restore_stream=True)
+            self.status_text.setText(f"Playlist saved · {len(self.streams)} streams")
+
     def _refresh_list(self) -> None:
         needle = self.search.text().strip().lower()
         self.camera_list.clear()
         self.filtered_indexes.clear()
         for index, stream in enumerate(self.streams):
-            haystack = f"{stream.name} {stream.group}".lower()
+            haystack = f"{stream.name} {stream.group} {stream.notes}".lower()
             if needle and needle not in haystack:
                 continue
-            label = stream.name if not stream.group else f"{stream.name}\n{stream.group}"
+            star = "★  " if stream.favorite else ""
+            label = f"{star}{stream.name}" if not stream.group else f"{star}{stream.name}\n{stream.group}"
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, index)
-            item.setToolTip(stream.url)
+            tooltip = stream.url
+            if stream.notes:
+                tooltip += f"\n\n{stream.notes}"
+            item.setToolTip(tooltip)
             self.camera_list.addItem(item)
             self.filtered_indexes.append(index)
             if index == self.current_index:

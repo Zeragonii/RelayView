@@ -18,3 +18,34 @@ rtsp://192.168.1.2:8554/garage
 def test_plain_urls_get_friendly_fallback_name():
     streams = parse_m3u_text("rtsp://example.test:8554/back_garden\n")
     assert streams[0].name == "Back Garden"
+
+from relayview.models import Stream
+from relayview.playlist import serialize_m3u
+
+
+def test_relayview_metadata_and_unknown_attributes_round_trip():
+    source = '''#EXTM3U
+#EXTINF:-1 tvg-id="front" custom-key="keep-me" group-title="Outside" relayview-favorite="1" relayview-notes="Doorbell camera",Front Door
+rtsp://example.test/front
+'''
+    streams = parse_m3u_text(source)
+    stream = streams[0]
+    assert stream.favorite is True
+    assert stream.notes == "Doorbell camera"
+    assert stream.attrs["custom-key"] == "keep-me"
+
+    output = serialize_m3u(streams)
+    assert 'custom-key="keep-me"' in output
+    assert 'relayview-favorite="1"' in output
+    assert 'relayview-notes="Doorbell camera"' in output
+
+
+def test_serialization_preserves_order_and_edits():
+    streams = [
+        Stream(name="Garage", url="rtsp://example.test/garage", group="Outside"),
+        Stream(name="Kitchen", url="rtsp://example.test/kitchen", favorite=True),
+    ]
+    output = serialize_m3u(streams)
+    assert output.index("Garage") < output.index("Kitchen")
+    assert 'group-title="Outside"' in output
+    assert 'relayview-favorite="1"' in output

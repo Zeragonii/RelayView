@@ -6,7 +6,8 @@ RelayView is a small, modern desktop viewer for M3U/M3U8 camera playlists. It is
 
 - Clean dark PySide6 interface
 - M3U/M3U8 playlist parsing
-- Searchable camera list
+- Searchable camera list with favourites and notes
+- Built-in playlist editor for renaming, reordering and stream metadata
 - Click-to-switch streams
 - Arbitrary camera grids (1×2, 2×2, 6×2, and beyond)
 - Click a grid tile then choose a camera to assign it
@@ -42,8 +43,8 @@ The packaged Windows build includes a trimmed VLC runtime, so a separate VLC ins
 Update the version in both `pyproject.toml` and `relayview/__init__.py`, commit it, then tag that commit:
 
 ```bash
-git tag v0.1.5
-git push origin v0.1.5
+git tag v0.1.6
+git push origin v0.1.6
 ```
 
 GitHub Actions will test the project, build the Windows application, create Velopack installer/update packages, generate a delta against the previous Velopack release when possible, and publish the GitHub Release.
@@ -71,6 +72,19 @@ pytest -q
 
 MIT. VLC/libVLC and Qt/PySide6 retain their respective upstream licenses.
 
+
+
+## v0.1.6
+
+- Added a built-in M3U playlist editor.
+- Rename streams without manually editing the playlist file.
+- Drag and drop streams to change their playlist order.
+- Edit stream group, URL, favourite status and notes.
+- Favourites are shown with a star in the camera sidebar.
+- Notes are searchable and shown in camera tooltips.
+- RelayView metadata is stored as compatible custom `#EXTINF` attributes.
+- Unknown existing `#EXTINF` attributes are preserved when saving.
+- Playlist saves use atomic file replacement to reduce the risk of a partially written M3U.
 
 ## v0.1.5
 
