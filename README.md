@@ -66,6 +66,12 @@ pytest -q
 
 MIT. VLC/libVLC and Qt/PySide6 retain their respective upstream licenses.
 
+## v0.1.3
+
+- Fixed the in-app updater crashing with `cannot import name 'Sources' from 'velopack'`.
+- Uses Velopack's supported Python `UpdateManager(REPOSITORY_URL)` API, which auto-detects GitHub release feeds.
+- This is a one-time manual installer update for users on v0.1.1/v0.1.2 because the updater in those versions cannot repair itself.
+
 ## v0.1.2
 
 - Added an always-available **Cameras** button in the player header so the camera list can always be restored after hiding it.

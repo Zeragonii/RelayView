@@ -14,10 +14,7 @@ class UpdateCheckThread(QThread):
             return
         try:
             import velopack
-            from velopack import Sources
-
-            source = Sources.GithubSource(REPOSITORY_URL, None, False)
-            manager = velopack.UpdateManager(source)
+            manager = velopack.UpdateManager(REPOSITORY_URL)
             update = manager.check_for_updates()
             self.finished_check.emit(bool(update), "")
         except Exception as exc:  # pragma: no cover - network/platform specific
@@ -34,10 +31,7 @@ class UpdateDownloadThread(QThread):
             return
         try:
             import velopack
-            from velopack import Sources
-
-            source = Sources.GithubSource(REPOSITORY_URL, None, False)
-            manager = velopack.UpdateManager(source)
+            manager = velopack.UpdateManager(REPOSITORY_URL)
             update = manager.check_for_updates()
             if not update:
                 self.downloaded.emit(False, "No update is available anymore.")
@@ -54,10 +48,7 @@ def apply_pending_update() -> None:
         raise RuntimeError("Update source is not configured.")
 
     import velopack
-    from velopack import Sources
-
-    source = Sources.GithubSource(REPOSITORY_URL, None, False)
-    manager = velopack.UpdateManager(source)
+    manager = velopack.UpdateManager(REPOSITORY_URL)
     pending = manager.get_update_pending_restart()
     if pending is None:
         raise RuntimeError("The downloaded update could not be found.")
