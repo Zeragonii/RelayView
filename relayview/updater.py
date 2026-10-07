@@ -40,24 +40,3 @@ class UpdateDownloadThread(QThread):
             self.downloaded.emit(True, "")
         except Exception as exc:  # pragma: no cover - network/platform specific
             self.downloaded.emit(False, str(exc))
-
-
-def apply_pending_update() -> None:
-    """Exit RelayView, apply the already-downloaded update, then restart.
-
-    Velopack's Python binding provides apply_updates_and_restart() for exactly
-    this flow. Using wait_exit_then_apply_updates() from the GUI thread can
-    deadlock if the application waits for that call to return before exiting.
-    """
-    if not REPOSITORY_URL:
-        raise RuntimeError("Update source is not configured.")
-
-    import velopack
-    manager = velopack.UpdateManager(REPOSITORY_URL)
-    pending = manager.get_update_pending_restart()
-    if pending is None:
-        raise RuntimeError("The downloaded update could not be found.")
-
-    # This helper terminates the current app, applies the update and relaunches
-    # RelayView. It avoids the wait-for-exit handoff used by the C/C++ API.
-    manager.apply_updates_and_restart(pending)

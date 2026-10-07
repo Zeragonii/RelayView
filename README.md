@@ -43,8 +43,8 @@ The packaged Windows build includes a trimmed VLC runtime, so a separate VLC ins
 Update the version in both `pyproject.toml` and `relayview/__init__.py`, commit it, then tag that commit:
 
 ```bash
-git tag v0.1.7
-git push origin v0.1.7
+git tag v0.1.8
+git push origin v0.1.8
 ```
 
 GitHub Actions will test the project, build the Windows application, create Velopack installer/update packages, generate a delta against the previous Velopack release when possible, and publish the GitHub Release.
@@ -73,6 +73,13 @@ pytest -q
 MIT. VLC/libVLC and Qt/PySide6 retain their respective upstream licenses.
 
 
+
+
+## v0.1.8
+
+- Reworked update installation for reliability. RelayView no longer asks Velopack to replace the live application while Qt/libVLC are still running.
+- After a download finishes, **Install now** cleanly closes RelayView. Launch it once more and Velopack applies the pending update before the GUI starts.
+- This intentionally trades automatic restart for a safer update handoff and avoids the native crash seen in earlier releases.
 
 ## v0.1.7
 

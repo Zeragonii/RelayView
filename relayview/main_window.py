@@ -30,7 +30,7 @@ from .grid_view import GridSizeDialog, GridView
 from .playlist import load_m3u
 from .playlist_editor import PlaylistEditorDialog
 from .vlc_backend import VLCBackend
-from .updater import UpdateCheckThread, UpdateDownloadThread, apply_pending_update
+from .updater import UpdateCheckThread, UpdateDownloadThread
 from . import __version__
 
 
@@ -693,32 +693,30 @@ class MainWindow(QMainWindow):
                 self.status_text.setText("Update failed")
                 return
 
-            self.status_text.setText("Update ready")
+            self.status_text.setText("Update downloaded — restart required")
             answer = QMessageBox.question(
                 self,
-                "Update ready",
-                "The update has been downloaded. Restart RelayView now to install it?",
+                "Update downloaded",
+                "The update has been downloaded successfully.\n\n"
+                "Close RelayView now, then launch it again to install the update?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes,
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return
 
+            # Do not invoke Velopack's apply API from inside the live Qt/libVLC
+            # process. Velopack already auto-applies a downloaded newer package
+            # at the very start of the next launch (before Qt is initialised).
+            # Closing cleanly here avoids native shutdown/update races.
+            self.settings.setValue("geometry", self.saveGeometry())
+            self._save_grid_state()
             self.settings.sync()
             if self.backend:
                 self.backend.stop()
 
-            # Return control to Qt for one event-loop turn so the dialog closes
-            # and the UI can repaint before Velopack exits/restarts the process.
-            def apply_now() -> None:
-                try:
-                    self.status_text.setText("Restarting to install update…")
-                    apply_pending_update()
-                except Exception as exc:
-                    QMessageBox.critical(self, "Could not apply update", str(exc))
-                    self.status_text.setText("Update install failed")
-
-            QTimer.singleShot(0, apply_now)
+            self.status_text.setText("Update ready — closing RelayView…")
+            QTimer.singleShot(0, QApplication.instance().quit)
 
         thread.downloaded.connect(finished)
         thread.start()
