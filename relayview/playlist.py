@@ -6,6 +6,9 @@ from tempfile import NamedTemporaryFile
 from urllib.parse import urlparse
 
 from .models import Stream
+from .logging_config import get_logger
+
+log = get_logger("playlist")
 
 _ATTR_RE = re.compile(r'([\w-]+)="([^"]*)"')
 
@@ -66,8 +69,14 @@ def parse_m3u_text(text: str) -> list[Stream]:
 
 def load_m3u(path: str | Path) -> list[Stream]:
     path = Path(path)
-    # utf-8-sig tolerates BOMs produced by some playlist generators.
-    return parse_m3u_text(path.read_text(encoding="utf-8-sig", errors="replace"))
+    log.info("Loading playlist path=%s", path)
+    try:
+        streams = parse_m3u_text(path.read_text(encoding="utf-8-sig", errors="replace"))
+        log.info("Playlist loaded path=%s streams=%s", path, len(streams))
+        return streams
+    except Exception:
+        log.exception("Playlist load failed path=%s", path)
+        raise
 
 
 def _escape_attr(value: str) -> str:
@@ -108,6 +117,7 @@ def serialize_m3u(streams: list[Stream]) -> str:
 
 def save_m3u(path: str | Path, streams: list[Stream]) -> None:
     path = Path(path)
+    log.info("Saving playlist path=%s streams=%s", path, len(streams))
     path.parent.mkdir(parents=True, exist_ok=True)
     content = serialize_m3u(streams)
 
@@ -116,3 +126,4 @@ def save_m3u(path: str | Path, streams: list[Stream]) -> None:
         temp.write(content)
         temp_path = Path(temp.name)
     temp_path.replace(path)
+    log.info("Playlist save complete path=%s", path)

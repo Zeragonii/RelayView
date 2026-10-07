@@ -3,21 +3,30 @@ from __future__ import annotations
 from PySide6.QtCore import QThread, Signal
 
 from .build_info import REPOSITORY_URL
+from .logging_config import get_logger
+
+log = get_logger("updater")
 
 
 class UpdateCheckThread(QThread):
     finished_check = Signal(bool, str)
 
     def run(self) -> None:
+        log.debug("Update check thread started repository=%s", REPOSITORY_URL or "<unset>")
         if not REPOSITORY_URL:
-            self.finished_check.emit(False, "Update source is only configured in packaged GitHub builds.")
+            message = "Update source is only configured in packaged GitHub builds."
+            log.error(message)
+            self.finished_check.emit(False, message)
             return
         try:
             import velopack
+            log.debug("Creating Velopack UpdateManager")
             manager = velopack.UpdateManager(REPOSITORY_URL)
             update = manager.check_for_updates()
+            log.info("Update check complete available=%s update=%r", bool(update), update)
             self.finished_check.emit(bool(update), "")
         except Exception as exc:  # pragma: no cover - network/platform specific
+            log.exception("Update check failed")
             self.finished_check.emit(False, str(exc))
 
 
@@ -26,17 +35,32 @@ class UpdateDownloadThread(QThread):
     downloaded = Signal(bool, str)
 
     def run(self) -> None:
+        log.debug("Update download thread started repository=%s", REPOSITORY_URL or "<unset>")
         if not REPOSITORY_URL:
-            self.downloaded.emit(False, "Update source is not configured.")
+            message = "Update source is not configured."
+            log.error(message)
+            self.downloaded.emit(False, message)
             return
         try:
             import velopack
             manager = velopack.UpdateManager(REPOSITORY_URL)
+            log.debug("Rechecking for update before download")
             update = manager.check_for_updates()
             if not update:
-                self.downloaded.emit(False, "No update is available anymore.")
+                message = "No update is available anymore."
+                log.warning(message)
+                self.downloaded.emit(False, message)
                 return
-            manager.download_updates(update, lambda value: self.progress.emit(int(value)))
+
+            def report(value: int) -> None:
+                ivalue = int(value)
+                log.debug("Update download progress=%s%%", ivalue)
+                self.progress.emit(ivalue)
+
+            log.info("Downloading update update=%r", update)
+            manager.download_updates(update, report)
+            log.info("Update download completed")
             self.downloaded.emit(True, "")
         except Exception as exc:  # pragma: no cover - network/platform specific
+            log.exception("Update download failed")
             self.downloaded.emit(False, str(exc))

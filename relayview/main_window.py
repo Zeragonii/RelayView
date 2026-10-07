@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QSettings, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QIcon, QKeySequence, QShortcut
+from PySide6.QtCore import QEvent, QSettings, Qt, QTimer, Signal, QUrl
+from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -32,6 +32,10 @@ from .playlist_editor import PlaylistEditorDialog
 from .vlc_backend import VLCBackend
 from .updater import UpdateCheckThread, UpdateDownloadThread
 from . import __version__
+from .diagnostics import diagnostic_summary
+from .logging_config import current_log_path, get_log_level, get_logger, log_dir, set_log_level
+
+log = get_logger("ui")
 
 
 class MainWindow(QMainWindow):
@@ -49,6 +53,7 @@ class MainWindow(QMainWindow):
             self.setWindowIcon(QIcon(str(icon_path)))
 
         self.settings = QSettings("RelayView", "RelayView")
+        log.info("MainWindow initialising version=%s log_level=%s", __version__, get_log_level())
         self.streams: list[Stream] = []
         self.filtered_indexes: list[int] = []
         self.current_index = -1
@@ -309,6 +314,25 @@ class MainWindow(QMainWindow):
         menu.addAction(grid_action)
         menu.addSeparator()
 
+        logging_menu = menu.addMenu("Logging")
+        level_group = QActionGroup(self)
+        level_group.setExclusive(True)
+        current_level = get_log_level()
+        for level in ("ERROR", "WARNING", "INFO", "DEBUG"):
+            action = QAction(level.title(), self)
+            action.setCheckable(True)
+            action.setChecked(level == current_level)
+            action.triggered.connect(lambda checked, selected=level: checked and self._set_log_level(selected))
+            level_group.addAction(action)
+            logging_menu.addAction(action)
+        logging_menu.addSeparator()
+        open_logs = QAction("Open log folder", self)
+        open_logs.triggered.connect(self._open_log_folder)
+        logging_menu.addAction(open_logs)
+        copy_diag = QAction("Copy diagnostic summary", self)
+        copy_diag.triggered.connect(self._copy_diagnostic_summary)
+        logging_menu.addAction(copy_diag)
+
         update_action = QAction("Check for updates…", self)
         update_action.triggered.connect(lambda: self.check_for_updates(silent=False))
         menu.addAction(update_action)
@@ -324,6 +348,32 @@ class MainWindow(QMainWindow):
         menu.addAction(about_action)
 
         menu.exec(self.sidebar.mapToGlobal(self.sidebar.rect().topRight()))
+
+    def _set_log_level(self, level: str) -> None:
+        level = set_log_level(level)
+        self.settings.setValue("log_level", level)
+        self.settings.sync()
+        log.warning("Runtime logging level selected=%s", level)
+        self.status_text.setText(f"Logging set to {level}")
+
+    def _open_log_folder(self) -> None:
+        path = log_dir()
+        log.info("Opening log folder path=%s", path)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def _copy_diagnostic_summary(self) -> None:
+        playlist_path = str(self.settings.value("playlist_path", ""))
+        summary = diagnostic_summary(
+            version=__version__,
+            playlist_name=Path(playlist_path).name if playlist_path else "",
+            view_mode=self._view_mode,
+            grid_rows=self.grid_view.rows,
+            grid_columns=self.grid_view.columns,
+            active_grid_feeds=sum(1 for stream in self.grid_view.stream_assignments() if stream),
+        )
+        QApplication.clipboard().setText(summary)
+        log.info("Diagnostic summary copied log=%s", current_log_path())
+        self.status_text.setText("Diagnostic summary copied")
 
     def open_playlist_dialog(self) -> None:
         saved_path = str(self.settings.value("playlist_path", ""))
@@ -484,13 +534,16 @@ class MainWindow(QMainWindow):
         self.status_badge.setText(status.replace("…", ""))
 
     def configure_grid_dialog(self) -> None:
+        log.info("Opening grid configuration current=%sx%s", self.grid_view.rows, self.grid_view.columns)
         dialog = GridSizeDialog(self.grid_view.rows, self.grid_view.columns, self)
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
         rows, columns = dialog.dimensions()
+        log.info("Grid configuration accepted rows=%s columns=%s", rows, columns)
         self.activate_grid(rows, columns, reconfigure=True)
 
     def activate_grid(self, rows: int | None = None, columns: int | None = None, reconfigure: bool = False) -> None:
+        log.info("activate_grid begin rows=%s columns=%s reconfigure=%s view_mode=%s", rows, columns, reconfigure, self._view_mode)
         if rows is not None and columns is not None:
             existing = self.grid_view.stream_assignments()
             count = rows * columns
@@ -528,6 +581,7 @@ class MainWindow(QMainWindow):
         self._set_view_button_state()
         self._update_nav_buttons()
         self._save_grid_state()
+        log.info("activate_grid complete grid=%sx%s active=%s", self.grid_view.rows, self.grid_view.columns, active)
 
     def show_single_view(self) -> None:
         if self._view_mode == "single":
@@ -642,6 +696,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(150, lambda: self.load_playlist(str(path), restore_stream=True))
 
     def check_for_updates(self, silent: bool = False) -> None:
+        log.info("Update check requested silent=%s", silent)
         if self._update_check_thread and self._update_check_thread.isRunning():
             if not silent:
                 self.status_text.setText("Already checking for updates…")
@@ -654,6 +709,7 @@ class MainWindow(QMainWindow):
         self._update_check_thread = thread
 
         def finished(available: bool, error: str) -> None:
+            log.info("Update check callback available=%s error=%r", available, error)
             if error:
                 if not silent:
                     QMessageBox.warning(self, "Update check failed", error)
@@ -679,6 +735,7 @@ class MainWindow(QMainWindow):
         thread.start()
 
     def _download_update(self) -> None:
+        log.info("Update download requested")
         if self._update_download_thread and self._update_download_thread.isRunning():
             return
 
@@ -688,6 +745,7 @@ class MainWindow(QMainWindow):
         thread.progress.connect(lambda value: self.status_text.setText(f"Downloading update… {value}%"))
 
         def finished(ok: bool, error: str) -> None:
+            log.info("Update download callback ok=%s error=%r", ok, error)
             if not ok:
                 QMessageBox.warning(self, "Update failed", error or "The update could not be downloaded.")
                 self.status_text.setText("Update failed")
@@ -713,15 +771,18 @@ class MainWindow(QMainWindow):
             self._save_grid_state()
             self.settings.sync()
             if self.backend:
+                log.info("Stopping backend before update-close handoff")
                 self.backend.stop()
 
             self.status_text.setText("Update ready — closing RelayView…")
+            log.warning("Closing RelayView with downloaded update pending")
             QTimer.singleShot(0, QApplication.instance().quit)
 
         thread.downloaded.connect(finished)
         thread.start()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        log.info("MainWindow closeEvent view_mode=%s grid=%sx%s", self._view_mode, self.grid_view.rows, self.grid_view.columns)
         self.settings.setValue("geometry", self.saveGeometry())
         self._save_grid_state()
         if self.backend:

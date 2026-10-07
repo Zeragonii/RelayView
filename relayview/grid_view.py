@@ -19,6 +19,9 @@ from PySide6.QtWidgets import (
 
 from .models import Stream
 from .vlc_backend import VLCBackend, VLCPlayer
+from .logging_config import get_logger, redact_url
+
+log = get_logger("grid")
 
 GRID_MIME = "application/x-relayview-grid-tile"
 
@@ -26,6 +29,7 @@ GRID_MIME = "application/x-relayview-grid-tile"
 def _prepare_windows_video_host(widget: QWidget) -> int:
     """Return a libVLC-safe native HWND for a Qt video host on Windows."""
     hwnd = int(widget.winId())
+    log.debug("Preparing video host widget=%s hwnd=%s platform=%s", id(widget), hwnd, sys.platform)
     if not sys.platform.startswith("win"):
         return hwnd
 
@@ -46,7 +50,10 @@ def _prepare_windows_video_host(widget: QWidget) -> int:
     style = get_style(hwnd, GWL_STYLE)
     required = WS_CLIPCHILDREN | WS_CLIPSIBLINGS
     if (style & required) != required:
+        log.debug("Applying HWND styles hwnd=%s old_style=0x%x required=0x%x", hwnd, style, required)
         set_style(hwnd, GWL_STYLE, style | required)
+    else:
+        log.debug("HWND styles already valid hwnd=%s style=0x%x", hwnd, style)
     return hwnd
 
 
@@ -203,13 +210,16 @@ class GridView(QWidget):
         self.layout_grid = QGridLayout(self)
         self.layout_grid.setContentsMargins(0, 0, 0, 0)
         self.layout_grid.setSpacing(8)
+        log.debug("GridView init backend=%s", bool(backend))
         self.configure(2, 2, [])
 
     def configure(self, rows: int, columns: int, streams: list[Stream | None]) -> None:
         rows = max(1, int(rows))
         columns = max(1, int(columns))
+        log.info("Grid configure requested rows=%s columns=%s incoming_assignments=%s current_tiles=%s generation=%s", rows, columns, len(streams), len(self.tiles), self._generation)
         # Invalidate any deferred startup callbacks from the previous grid.
         self._generation += 1
+        log.debug("Grid generation advanced to %s", self._generation)
 
         old_rows = self.rows
         old_columns = self.columns
@@ -218,6 +228,7 @@ class GridView(QWidget):
             old_streams = list(streams)
 
         for tile in self.tiles:
+            log.debug("Destroying tile index=%s player=%s stream=%s", tile.index, id(tile.player) if tile.player else None, redact_url(tile.stream.url) if tile.stream else None)
             if tile.player and self.backend:
                 self.backend.release_player(tile.player)
             self.layout_grid.removeWidget(tile)
@@ -235,6 +246,7 @@ class GridView(QWidget):
 
         for index in range(count):
             tile = GridTile(index, self)
+            log.debug("Created grid tile index=%s widget=%s video_widget=%s", index, id(tile), id(tile.video))
             tile.clicked.connect(self.set_active)
             tile.swap_requested.connect(self.swap_tiles)
             self.tiles.append(tile)
@@ -248,12 +260,14 @@ class GridView(QWidget):
             self.layout_grid.setColumnStretch(column, 1)
 
         self.set_active(min(self.active_index, count - 1))
+        log.info("Grid configure complete rows=%s columns=%s tiles=%s generation=%s", self.rows, self.columns, len(self.tiles), self._generation)
         self.assignments_changed.emit()
 
     def _ensure_player(self, tile: GridTile) -> VLCPlayer | None:
         if not self.backend:
             return None
         if tile.player is None:
+            log.debug("Allocating player for tile=%s", tile.index)
             tile.player = self.backend.create_player()
             tile.player.set_volume(self._volume)
             tile.player.set_muted(self._muted)
@@ -270,8 +284,10 @@ class GridView(QWidget):
 
     def _start_tile(self, tile: GridTile, generation: int | None = None) -> None:
         if generation is not None and generation != self._generation:
+            log.debug("Skipping stale tile start tile=%s callback_generation=%s current_generation=%s", getattr(tile, "index", None), generation, self._generation)
             return
         if tile not in self.tiles or not tile.stream or not self.isVisible():
+            log.debug("Skipping tile start tile=%s in_tiles=%s has_stream=%s visible=%s", getattr(tile, "index", None), tile in self.tiles, bool(getattr(tile, "stream", None)), self.isVisible())
             return
         player = self._ensure_player(tile)
         if not player:
@@ -279,6 +295,7 @@ class GridView(QWidget):
         # winId() is requested only after the tile is visible and the event loop has
         # had a chance to create a stable native HWND. Attach exactly once per start.
         hwnd = _prepare_windows_video_host(tile.video)
+        log.info("Starting grid tile=%s player=%s hwnd=%s stream=%s", tile.index, id(player), hwnd, redact_url(tile.stream.url))
         player.attach_video(hwnd)
         player.play(tile.stream.url)
         player.set_volume(self._volume)
@@ -296,6 +313,7 @@ class GridView(QWidget):
         self.active_changed.emit(index)
 
     def assign_stream(self, index: int, stream: Stream | None) -> None:
+        log.info("Assign stream tile=%s stream=%s", index, redact_url(stream.url) if stream else None)
         if not (0 <= index < len(self.tiles)):
             return
         tile = self.tiles[index]
@@ -334,6 +352,7 @@ class GridView(QWidget):
         return [tile.stream.url if tile.stream else "" for tile in self.tiles]
 
     def play_all(self) -> None:
+        log.info("Grid play_all rows=%s columns=%s assigned=%s generation=%s", self.rows, self.columns, sum(1 for t in self.tiles if t.stream), self._generation)
         self._paused = False
         generation = self._generation
         # Defer startup until after QStackedWidget has shown the grid and native
@@ -344,6 +363,7 @@ class GridView(QWidget):
                 QTimer.singleShot(75 + (offset * 35), lambda t=tile, g=generation: self._start_tile(t, g))
 
     def stop_all(self) -> None:
+        log.info("Grid stop_all tiles=%s", len(self.tiles))
         for tile in self.tiles:
             if tile.player:
                 tile.player.stop()

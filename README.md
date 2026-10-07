@@ -128,3 +128,19 @@ MIT. VLC/libVLC and Qt/PySide6 retain their respective upstream licenses.
 - Added a persistent 0–100 volume slider next to the mute control.
 - Updated Velopack to 1.2.161 and explicitly package Windows releases as `win-x64`.
 - Reduced the normal GitHub Actions artifact to the setup executable; full/delta packages remain on GitHub Releases for the updater.
+
+## v0.2.0 — Diagnostics & granular logging
+
+RelayView 0.2.0 adds a persistent rotating logging system aimed at diagnosing native Qt/libVLC grid crashes and update failures.
+
+- Default log level: **ERROR**
+- Runtime levels: **ERROR / WARNING / INFO / DEBUG**
+- Menu: **Logging → Open log folder**
+- Menu: **Logging → Copy diagnostic summary**
+- Main log: `%LOCALAPPDATA%\RelayView\logs\relayview.log` on Windows
+- Rotation: 5 MB per file, 5 backups
+- Native crash traces remain alongside the main log as `crash-*.log`
+- Debug logging traces grid lifecycle, HWND preparation, VLC player attach/play/release, updater checks/downloads, UI transitions and shutdown.
+- Credentials and common secret query parameters are redacted from stream URLs before they are written to logs.
+
+For reproducing a grid crash, set **Logging → Debug**, reproduce the crash, then send `relayview.log` plus the newest `crash-*.log` from the log folder.
