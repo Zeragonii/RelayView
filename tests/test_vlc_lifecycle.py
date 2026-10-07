@@ -1,52 +1,55 @@
-import sys
-
 from relayview.vlc_backend import VLCPlayer
 
 
-class FakeNativePlayer:
+class FakeProcess:
     def __init__(self):
-        self.calls = []
+        self.pid = 1234
+        self.returncode = None
+        self.terminated = False
+        self.killed = False
+        self.stdin = None
 
-    def set_hwnd(self, value):
-        self.calls.append(("detach", value))
+    def poll(self):
+        return self.returncode
 
-    def set_nsobject(self, value):
-        self.calls.append(("detach", value))
+    def terminate(self):
+        self.terminated = True
+        self.returncode = 0
 
-    def set_xwindow(self, value):
-        self.calls.append(("detach", value))
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
 
-    def stop(self):
-        self.calls.append(("stop", None))
-
-    def set_media(self, value):
-        self.calls.append(("media", value))
-
-    def release(self):
-        self.calls.append(("release", None))
+    def wait(self, timeout=None):
+        return self.returncode
 
 
 def make_player():
-    wrapper = VLCPlayer.__new__(VLCPlayer)
-    wrapper.player = FakeNativePlayer()
-    wrapper._attached_handle = 12345
-    return wrapper
+    player = VLCPlayer.__new__(VLCPlayer)
+    player._process = FakeProcess()
+    player._attached_handle = 12345
+    player._current_url = "rtsp://example"
+    player._volume = 100
+    player._muted = False
+    player._paused = False
+    player._lock = __import__('threading').Lock()
+    player._status_callback = lambda _: None
+    return player
 
 
-def test_stop_detaches_before_native_stop():
+def test_stop_terminates_worker_instead_of_native_vlc_stop():
     wrapper = make_player()
+    proc = wrapper._process
     wrapper.stop(detach=True)
-    assert wrapper.player.calls[0] == ("detach", 0)
-    assert wrapper.player.calls[1] == ("stop", None)
+    assert proc.terminated is True
+    assert wrapper._process is None
     assert wrapper._attached_handle is None
 
 
-def test_release_orders_detach_stop_clear_release():
+def test_release_is_idempotent_after_worker_termination():
     wrapper = make_player()
+    proc = wrapper._process
     wrapper.release()
-    assert wrapper.player.calls == [
-        ("detach", 0),
-        ("stop", None),
-        ("media", None),
-        ("release", None),
-    ]
+    wrapper.release()
+    assert proc.terminated is True
+    assert wrapper._process is None

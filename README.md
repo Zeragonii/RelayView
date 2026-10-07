@@ -1,5 +1,13 @@
 # RelayView
 
+### v0.2.2 — playback isolation
+- Runs every VLC player in an isolated RelayView child process.
+- Grid/single transitions terminate workers instead of calling native `libvlc_media_player_stop()`.
+- Stream changes replace the worker process, avoiding fragile RTSP teardown/reuse.
+- App/update shutdown can forcibly terminate playback workers without taking down the GUI.
+- Adds `player-workers.log` for isolated playback diagnostics.
+
+
 > v0.1.9 grid-stability hotfix: Windows libVLC video hosts now receive the required native window styles, duplicate HWND attachment is prevented, and native crash diagnostics are written under `%LOCALAPPDATA%\RelayView\logs`.
 
 RelayView is a small, modern desktop viewer for M3U/M3U8 camera playlists. It is designed around Frigate/go2rtc-style restreams but works with ordinary VLC-compatible stream URLs too.
@@ -145,7 +153,7 @@ RelayView 0.2.0 adds a persistent rotating logging system aimed at diagnosing na
 
 For reproducing a grid crash, set **Logging → Debug**, reproduce the crash, then send `relayview.log` plus the newest `crash-*.log` from the log folder.
 
-## v0.2.1 — VLC lifecycle hardening
+## v0.2.2 — VLC lifecycle hardening
 
 RelayView 0.2.1 focuses on the native libVLC lifecycle shared by grid transitions and application/update shutdown.
 
@@ -158,3 +166,7 @@ RelayView 0.2.1 focuses on the native libVLC lifecycle shared by grid transition
 - Adds lifecycle ordering tests to prevent regressions.
 
 For troubleshooting, set Logging → Debug before reproducing a grid or update issue. The last lifecycle message before a native process failure should now identify the exact libVLC operation involved.
+
+## Playback isolation (v0.2.2)
+
+RelayView now hosts each libVLC media player in a separate child process. The main Qt GUI no longer loads libVLC directly. Closing, switching, or rebuilding a stream terminates the corresponding worker process instead of calling `libvlc_media_player_stop()`, isolating native VLC RTSP teardown failures from the application and updater. The packaged `RelayView.exe` doubles as the hidden playback worker, so there is no second executable to install.

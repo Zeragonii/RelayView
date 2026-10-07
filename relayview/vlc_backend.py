@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Callable
 
@@ -29,145 +32,198 @@ def configure_vlc_environment() -> None:
         log.debug("VLC_PLUGIN_PATH=%s", plugins)
 
 
-class VLCPlayer:
-    def __init__(self, instance, vlc_module, status_callback: Callable[[str], None] | None = None) -> None:
-        self.instance = instance
-        self.vlc = vlc_module
-        self._status_callback = status_callback or (lambda _status: None)
-        self.player = self.instance.media_player_new()
-        self._events = self.player.event_manager()
-        self._attached_handle: int | None = None
-        self._events.event_attach(self.vlc.EventType.MediaPlayerOpening, self._event("Connecting…"))
-        self._events.event_attach(self.vlc.EventType.MediaPlayerPlaying, self._event("Live"))
-        self._events.event_attach(self.vlc.EventType.MediaPlayerPaused, self._event("Paused"))
-        self._events.event_attach(self.vlc.EventType.MediaPlayerEncounteredError, self._event("Stream error"))
-        self._events.event_attach(self.vlc.EventType.MediaPlayerEndReached, self._event("Stream ended"))
-        log.debug("Created VLCPlayer id=%s native=%r", id(self), self.player)
+def _worker_command() -> list[str]:
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--player-worker"]
+    return [sys.executable, "-m", "relayview.player_worker"]
 
-    def _event(self, text: str):
-        def callback(_event) -> None:
-            log.debug("VLC event player=%s status=%s", id(self), text)
-            self._status_callback(text)
-        return callback
+
+class VLCPlayer:
+    """Proxy for a libVLC player hosted in an isolated child process.
+
+    The GUI process never loads libVLC. Destroying/switching a stream terminates the
+    worker process instead of calling libvlc_media_player_stop(), which is known to
+    be unstable with some RTSP streams on VLC 3.x.
+    """
+
+    def __init__(self, status_callback: Callable[[str], None] | None = None) -> None:
+        self._status_callback = status_callback or (lambda _status: None)
+        self._attached_handle: int | None = None
+        self._process: subprocess.Popen[str] | None = None
+        self._volume = 100
+        self._muted = False
+        self._paused = False
+        self._current_url: str | None = None
+        self._lock = threading.Lock()
+        log.debug("Created isolated VLCPlayer proxy id=%s", id(self))
+
+    @property
+    def player(self):
+        # Compatibility only; callers should not touch a native player anymore.
+        return None
+
+    def _spawn(self) -> None:
+        if self._process and self._process.poll() is None:
+            return
+        cmd = _worker_command()
+        creationflags = 0
+        if sys.platform.startswith("win"):
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        log.debug("Spawning playback worker proxy=%s command=%r", id(self), cmd)
+        self._process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
+            creationflags=creationflags,
+        )
+        log.info("Playback worker started proxy=%s pid=%s", id(self), self._process.pid)
+
+    def _send(self, command: str, **payload) -> bool:
+        with self._lock:
+            self._spawn()
+            proc = self._process
+            if not proc or not proc.stdin or proc.poll() is not None:
+                log.error("Playback worker unavailable proxy=%s command=%s", id(self), command)
+                return False
+            message = {"command": command, **payload}
+            try:
+                proc.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+                proc.stdin.flush()
+                log.debug("Worker command sent proxy=%s pid=%s command=%s", id(self), proc.pid, command)
+                return True
+            except (BrokenPipeError, OSError):
+                log.exception("Worker command failed proxy=%s pid=%s command=%s", id(self), proc.pid, command)
+                return False
 
     def attach_video(self, widget_id: int) -> None:
         widget_id = int(widget_id)
-        if self._attached_handle == widget_id:
-            log.debug("Skipping duplicate video attach player=%s hwnd=%s", id(self), widget_id)
-            return
-        log.debug("Attaching video player=%s old_hwnd=%s new_hwnd=%s platform=%s", id(self), self._attached_handle, widget_id, sys.platform)
-        if sys.platform.startswith("win"):
-            self.player.set_hwnd(widget_id)
-        elif sys.platform == "darwin":
-            self.player.set_nsobject(widget_id)
-        else:
-            self.player.set_xwindow(widget_id)
         self._attached_handle = widget_id
+        log.debug("Proxy video target set player=%s hwnd=%s", id(self), widget_id)
+        if self._process and self._process.poll() is None:
+            self._send("attach", hwnd=widget_id)
 
     def play(self, url: str) -> None:
-        log.info("Play player=%s url=%s", id(self), redact_url(url))
-        media = self.instance.media_new(url)
-        self.player.set_media(media)
-        result = self.player.play()
-        log.debug("player.play returned=%s player=%s", result, id(self))
+        # Always create a fresh worker for a new stream. This deliberately avoids
+        # libVLC's native stop/teardown path when switching RTSP media.
+        if self._process and self._process.poll() is None:
+            log.debug("Replacing playback worker before new stream proxy=%s", id(self))
+            self.terminate()
+        self._current_url = url
+        self._paused = False
+        self._spawn()
+        if self._attached_handle is not None:
+            self._send("attach", hwnd=self._attached_handle)
+        self._send("volume", value=self._volume)
+        self._send("mute", value=self._muted)
+        log.info("Play isolated player=%s url=%s", id(self), redact_url(url))
+        self._send("play", url=url)
+        self._status_callback("Connecting…")
 
     def toggle_pause(self) -> bool:
-        playing = bool(self.player.is_playing())
-        log.debug("Toggle pause player=%s is_playing=%s", id(self), playing)
-        if playing:
-            self.player.pause()
-            return True
-        self.player.play()
-        return False
+        self._paused = not self._paused
+        self._send("pause", value=self._paused)
+        return self._paused
 
     def set_paused(self, paused: bool) -> None:
-        log.debug("Set paused player=%s paused=%s", id(self), paused)
-        self.player.set_pause(1 if paused else 0)
+        self._paused = bool(paused)
+        self._send("pause", value=self._paused)
 
     def detach_video(self) -> None:
-        if self._attached_handle is None:
-            log.debug("Detach skipped player=%s already_detached=True", id(self))
-            return
-        log.debug("Detach begin player=%s hwnd=%s platform=%s", id(self), self._attached_handle, sys.platform)
-        if sys.platform.startswith("win"):
-            self.player.set_hwnd(0)
-        elif sys.platform == "darwin":
-            self.player.set_nsobject(0)
-        else:
-            self.player.set_xwindow(0)
+        log.debug("Proxy detach player=%s hwnd=%s", id(self), self._attached_handle)
         self._attached_handle = None
-        log.debug("Detach complete player=%s", id(self))
+        if self._process and self._process.poll() is None:
+            self._send("attach", hwnd=0)
+
+    def terminate(self) -> None:
+        """Terminate the worker without asking libVLC to stop/release."""
+        proc = self._process
+        self._process = None
+        if not proc:
+            return
+        if proc.poll() is not None:
+            log.debug("Playback worker already exited proxy=%s pid=%s rc=%s", id(self), proc.pid, proc.returncode)
+            return
+        log.warning("Terminating playback worker proxy=%s pid=%s", id(self), proc.pid)
+        try:
+            proc.terminate()
+            proc.wait(timeout=1.5)
+            log.info("Playback worker terminated proxy=%s pid=%s rc=%s", id(self), proc.pid, proc.returncode)
+        except subprocess.TimeoutExpired:
+            log.warning("Playback worker did not terminate promptly; killing pid=%s", proc.pid)
+            proc.kill()
+            try:
+                proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                log.error("Playback worker still present after kill pid=%s", proc.pid)
+        except Exception:
+            log.exception("Playback worker termination failed proxy=%s pid=%s", id(self), proc.pid)
+        finally:
+            try:
+                if proc.stdin:
+                    proc.stdin.close()
+            except Exception:
+                pass
 
     def stop(self, *, detach: bool = True) -> None:
-        log.debug("Stop requested player=%s detach=%s", id(self), detach)
+        # Compatibility alias. Crucially, this does NOT invoke libVLC stop().
         if detach:
-            self.detach_video()
-        log.debug("Native stop begin player=%s", id(self))
-        self.player.stop()
-        log.debug("Native stop returned player=%s", id(self))
+            self._attached_handle = None
+        log.debug("Stop proxy=%s implemented as worker termination", id(self))
+        self.terminate()
 
     def release(self) -> None:
-        log.debug("Player release begin player=%s", id(self))
-        self.stop(detach=True)
-        try:
-            log.debug("Clearing media player=%s", id(self))
-            self.player.set_media(None)
-            log.debug("Media cleared player=%s", id(self))
-        except Exception:
-            log.exception("set_media(None) failed player=%s", id(self))
-        try:
-            log.debug("Native release begin player=%s", id(self))
-            self.player.release()
-            log.debug("Native release returned player=%s", id(self))
-        except Exception:
-            log.exception("native release failed player=%s", id(self))
+        log.debug("Release proxy=%s implemented as worker termination", id(self))
+        self.terminate()
 
     def set_muted(self, muted: bool) -> None:
-        self.player.audio_set_mute(muted)
+        self._muted = bool(muted)
+        if self._process and self._process.poll() is None:
+            self._send("mute", value=self._muted)
 
     def set_volume(self, volume: int) -> None:
-        self.player.audio_set_volume(max(0, min(100, int(volume))))
+        self._volume = max(0, min(100, int(volume)))
+        if self._process and self._process.poll() is None:
+            self._send("volume", value=self._volume)
 
     def get_volume(self) -> int:
-        return int(self.player.audio_get_volume())
+        return self._volume
 
     def is_muted(self) -> bool:
-        return bool(self.player.audio_get_mute())
+        return self._muted
 
 
 class VLCBackend:
     def __init__(self, status_callback: Callable[[str], None] | None = None) -> None:
+        # Validate that the VLC runtime exists for packaged builds, but deliberately
+        # do not import/load libVLC in the GUI process.
         configure_vlc_environment()
-        try:
-            import vlc
-        except Exception as exc:
-            log.exception("VLC import failed")
-            raise RuntimeError("VLC could not be loaded. Install VLC 3.x, or use the packaged RelayView build.") from exc
-        self.vlc = vlc
-        log.info("Creating shared libVLC instance")
-        self.instance = vlc.Instance("--no-video-title-show", "--quiet", "--network-caching=250", "--clock-jitter=0")
-        self.primary = VLCPlayer(self.instance, self.vlc, status_callback)
+        bundled = _app_root() / "vlc"
+        if getattr(sys, "frozen", False) and not bundled.exists():
+            raise RuntimeError("The bundled VLC runtime is missing from this RelayView installation.")
+        log.info("Creating isolated playback backend (libVLC remains outside GUI process)")
+        self.primary = VLCPlayer(status_callback)
         self._extra_players: list[VLCPlayer] = []
         self._shutdown = False
 
     @property
     def player(self):
-        return self.primary.player
+        return None
 
     def create_player(self, status_callback: Callable[[str], None] | None = None) -> VLCPlayer:
-        player = VLCPlayer(self.instance, self.vlc, status_callback)
+        player = VLCPlayer(status_callback)
         self._extra_players.append(player)
-        log.debug("Registered extra player=%s count=%s", id(player), len(self._extra_players))
+        log.debug("Registered isolated extra player=%s count=%s", id(player), len(self._extra_players))
         return player
 
     def release_player(self, player: VLCPlayer) -> None:
-        log.debug("Releasing extra player=%s attached_hwnd=%s", id(player), player._attached_handle)
-        try:
-            player.release()
-        finally:
-            if player in self._extra_players:
-                self._extra_players.remove(player)
-            log.debug("Extra player released=%s remaining=%s", id(player), len(self._extra_players))
+        log.debug("Releasing isolated extra player=%s", id(player))
+        player.release()
+        if player in self._extra_players:
+            self._extra_players.remove(player)
 
     def attach_video(self, widget_id: int) -> None:
         self.primary.attach_video(widget_id)
@@ -179,41 +235,43 @@ class VLCBackend:
         return self.primary.toggle_pause()
 
     def quiesce_primary(self) -> None:
-        log.info("Quiesce primary begin player=%s", id(self.primary))
+        log.info("Quiesce primary via process termination player=%s", id(self.primary))
         self.primary.stop(detach=True)
-        log.info("Quiesce primary complete player=%s", id(self.primary))
+        log.info("Quiesce primary complete")
 
     def stop_primary(self) -> None:
         self.quiesce_primary()
 
     def stop(self) -> None:
-        log.info("Stopping VLC backend extra_players=%s", len(self._extra_players))
+        log.info("Stopping isolated backend workers extra_players=%s", len(self._extra_players))
         self.primary.stop(detach=True)
         for player in list(self._extra_players):
             player.stop(detach=True)
-        log.info("VLC backend stop complete")
+        log.info("Isolated backend workers stopped")
 
     def shutdown(self) -> None:
         if self._shutdown:
-            log.debug("VLC backend shutdown skipped already_shutdown=True")
+            log.debug("Playback backend shutdown skipped already_shutdown=True")
             return
         self._shutdown = True
-        log.warning("VLC backend shutdown begin extra_players=%s", len(self._extra_players))
+        log.warning("Playback backend shutdown begin extra_players=%s", len(self._extra_players))
         for player in list(self._extra_players):
             self.release_player(player)
         self.primary.release()
-        try:
-            log.debug("libVLC instance release begin")
-            self.instance.release()
-            log.debug("libVLC instance release returned")
-        except Exception:
-            log.exception("libVLC instance release failed")
-        log.warning("VLC backend shutdown complete")
+        log.warning("Playback backend shutdown complete")
+
     def set_muted(self, muted: bool) -> None:
         self.primary.set_muted(muted)
-        for player in self._extra_players: player.set_muted(muted)
+        for player in self._extra_players:
+            player.set_muted(muted)
+
     def set_volume(self, volume: int) -> None:
         self.primary.set_volume(volume)
-        for player in self._extra_players: player.set_volume(volume)
-    def get_volume(self) -> int: return self.primary.get_volume()
-    def is_muted(self) -> bool: return self.primary.is_muted()
+        for player in self._extra_players:
+            player.set_volume(volume)
+
+    def get_volume(self) -> int:
+        return self.primary.get_volume()
+
+    def is_muted(self) -> bool:
+        return self.primary.is_muted()

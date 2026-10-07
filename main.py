@@ -2,6 +2,12 @@ from __future__ import annotations
 
 import sys
 
+# Playback workers deliberately bypass Velopack and Qt. In packaged builds the
+# same RelayView.exe is reused as a hidden child process, keeping deployment small.
+if "--player-worker" in sys.argv:
+    from relayview.player_worker import run_worker
+    raise SystemExit(run_worker())
+
 import velopack
 
 from relayview.diagnostics import enable_crash_logging
@@ -13,8 +19,6 @@ log = get_logger("startup")
 crash_path = enable_crash_logging()
 log.debug("Process starting argv=%r crash_log=%s", sys.argv, crash_path)
 
-# Velopack must run before normal application startup. It may handle an install/update
-# event and exit/restart the process before Qt is initialised.
 try:
     log.debug("Entering Velopack bootstrap")
     velopack.App().run()
