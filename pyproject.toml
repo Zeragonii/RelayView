@@ -1,6 +1,6 @@
 [project]
 name = "relayview"
-version = "0.1.3"
+version = "0.1.4"
 description = "A clean M3U camera stream viewer backed by libVLC"
 requires-python = ">=3.10"
 dependencies = [

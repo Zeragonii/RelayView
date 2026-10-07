@@ -99,6 +99,49 @@ QSlider#volumeSlider::handle:horizontal {
     border-radius: 7px;
 }
 QSlider#volumeSlider::handle:horizontal:hover { background: #ffffff; }
+
+QPushButton#viewModeButton {
+    background: transparent;
+    border: 1px solid #273346;
+    padding: 6px 10px;
+}
+QPushButton#viewModeButton:hover { background: #182130; }
+QPushButton#viewModeButton[active="true"] {
+    background: #20304b;
+    border-color: #4c7dff;
+    color: #ffffff;
+}
+QFrame#gridTile {
+    background: #070a0f;
+    border: 1px solid #202938;
+    border-radius: 10px;
+}
+QFrame#gridTile[active="true"] {
+    border: 2px solid #4c7dff;
+}
+QFrame#gridVideo { background: #020304; border: none; }
+QFrame#gridTileFooter {
+    background: #10151e;
+    border: none;
+    border-top: 1px solid #202938;
+}
+QLabel#gridTileTitle {
+    color: #dbe4f0;
+    font-size: 9pt;
+    font-weight: 600;
+}
+QLabel#gridTileIndex {
+    color: #738197;
+    font-size: 8pt;
+}
+QSpinBox {
+    background: #161d28;
+    border: 1px solid #263142;
+    border-radius: 8px;
+    padding: 7px 9px;
+    color: #eaf0f8;
+}
+
 QLabel#streamTitle { font-size: 13pt; font-weight: 650; color: white; }
 QLabel#liveBadge {
     color: #9df7be;

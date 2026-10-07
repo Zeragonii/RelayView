@@ -20,11 +20,13 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSplitter,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from .models import Stream
+from .grid_view import GridSizeDialog, GridView
 from .playlist import load_m3u
 from .vlc_backend import VLCBackend
 from .updater import UpdateCheckThread, UpdateDownloadThread, apply_pending_update
@@ -52,6 +54,7 @@ class MainWindow(QMainWindow):
         self._fullscreen = False
         self._sidebar_width = 288
         self._sidebar_was_visible_before_fullscreen = True
+        self._view_mode = "single"
         self._update_check_thread = None
         self._update_download_thread = None
 
@@ -137,6 +140,16 @@ class MainWindow(QMainWindow):
         self.sidebar_btn.clicked.connect(self.toggle_sidebar)
         top_l.addWidget(self.sidebar_btn)
 
+        self.single_view_btn = QPushButton("Single", objectName="viewModeButton")
+        self.single_view_btn.setToolTip("Single-camera view")
+        self.single_view_btn.clicked.connect(self.show_single_view)
+        top_l.addWidget(self.single_view_btn)
+
+        self.grid_btn = QPushButton("▦  Grid…", objectName="viewModeButton")
+        self.grid_btn.setToolTip("Configure and open a camera grid")
+        self.grid_btn.clicked.connect(self.configure_grid_dialog)
+        top_l.addWidget(self.grid_btn)
+
         self.stream_title = QLabel("Choose a camera", objectName="streamTitle")
         self.stream_title.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         top_l.addWidget(self.stream_title)
@@ -145,12 +158,24 @@ class MainWindow(QMainWindow):
         top_l.addWidget(self.status_badge)
         main.addWidget(top)
 
+        self.viewer_stack = QStackedWidget()
+
         self.video_frame = QFrame(objectName="videoFrame")
         self.video_frame.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
         self.video_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.video_frame.setToolTip("Double-click for fullscreen")
         self.video_frame.installEventFilter(self)
-        main.addWidget(self.video_frame, 1)
+        self.viewer_stack.addWidget(self.video_frame)
+
+        self.grid_view = GridView(self.backend)
+        grid_rows = max(1, self.settings.value("grid_rows", 2, type=int))
+        grid_columns = max(1, self.settings.value("grid_columns", 2, type=int))
+        self.grid_view.configure(grid_rows, grid_columns, [])
+        self.grid_view.assignments_changed.connect(self._save_grid_state)
+        self.grid_view.active_changed.connect(self._grid_active_changed)
+        self.viewer_stack.addWidget(self.grid_view)
+
+        main.addWidget(self.viewer_stack, 1)
 
         controls = QFrame(objectName="controlBar")
         cl = QHBoxLayout(controls)
@@ -205,6 +230,7 @@ class MainWindow(QMainWindow):
         main.addWidget(controls)
         self.splitter.addWidget(content)
         self.splitter.setSizes([self._sidebar_width, 992])
+        self._set_view_button_state()
 
         # Attaching after native widget creation avoids the player taking over another handle.
         QTimer.singleShot(100, self._attach_video)
@@ -212,6 +238,7 @@ class MainWindow(QMainWindow):
     def _attach_video(self) -> None:
         if self.backend:
             self.backend.attach_video(int(self.video_frame.winId()))
+            self.grid_view.set_volume(self.volume_slider.value())
 
     def _bind_shortcuts(self) -> None:
         self._shortcuts: list[QShortcut] = []
@@ -258,6 +285,14 @@ class MainWindow(QMainWindow):
         full_action.setShortcut(QKeySequence("F"))
         full_action.triggered.connect(self.toggle_fullscreen)
         menu.addAction(full_action)
+
+        single_action = QAction("Single-camera view", self)
+        single_action.triggered.connect(self.show_single_view)
+        menu.addAction(single_action)
+
+        grid_action = QAction("Configure grid…", self)
+        grid_action.triggered.connect(self.configure_grid_dialog)
+        menu.addAction(grid_action)
         menu.addSeparator()
 
         update_action = QAction("Check for updates…", self)
@@ -311,6 +346,9 @@ class MainWindow(QMainWindow):
         last_url = self.settings.value("last_stream_url", "") if restore_stream else ""
         target = next((i for i, stream in enumerate(streams) if stream.url == last_url), 0)
         self.select_stream(target)
+        self._restore_grid_assignments()
+        if self._view_mode == "grid" or (restore_stream and self.settings.value("view_mode", "single") == "grid"):
+            self.activate_grid()
 
     def reload_playlist(self) -> None:
         path = self.settings.value("playlist_path", "")
@@ -335,7 +373,14 @@ class MainWindow(QMainWindow):
                 self.camera_list.setCurrentItem(item)
 
     def _activate_item(self, item: QListWidgetItem) -> None:
-        self.select_stream(int(item.data(Qt.ItemDataRole.UserRole)))
+        index = int(item.data(Qt.ItemDataRole.UserRole))
+        if self._view_mode == "grid":
+            self.grid_view.assign_stream(self.grid_view.active_index, self.streams[index])
+            self.status_text.setText(f"Assigned {self.streams[index].name} to tile {self.grid_view.active_index + 1}")
+            self.mute_btn.setEnabled(True)
+            self.pause_btn.setEnabled(True)
+        else:
+            self.select_stream(index)
 
     def select_stream(self, index: int) -> None:
         if not self.streams or self.backend is None:
@@ -343,41 +388,56 @@ class MainWindow(QMainWindow):
         index %= len(self.streams)
         stream = self.streams[index]
         self.current_index = index
+        self.settings.setValue("last_stream_url", stream.url)
+        self._refresh_list()
+        self._update_nav_buttons()
+        if self._view_mode == "grid":
+            return
         self.stream_title.setText(stream.name)
         self.status_text.setText("Connecting…")
         self.status_badge.setText("Connecting")
         self.backend.play(stream.url)
-        self.settings.setValue("last_stream_url", stream.url)
         self.pause_btn.setEnabled(True)
         self.mute_btn.setEnabled(True)
         self.pause_btn.setText("Pause")
-        self._refresh_list()
-        self._update_nav_buttons()
 
     def previous_stream(self) -> None:
+        if self._view_mode == "grid":
+            return
         if self.streams:
             self.select_stream((self.current_index - 1) % len(self.streams))
 
     def next_stream(self) -> None:
+        if self._view_mode == "grid":
+            return
         if self.streams:
             self.select_stream((self.current_index + 1) % len(self.streams))
 
     def _update_nav_buttons(self) -> None:
-        enabled = len(self.streams) > 1
+        enabled = self._view_mode == "single" and len(self.streams) > 1
         self.prev_btn.setEnabled(enabled)
         self.next_btn.setEnabled(enabled)
 
     def toggle_pause(self) -> None:
-        if not self.backend or self.current_index < 0:
+        if not self.backend:
+            return
+        if self._view_mode == "grid":
+            paused = self.grid_view.toggle_pause_all()
+            self.pause_btn.setText("Resume all" if paused else "Pause all")
+            return
+        if self.current_index < 0:
             return
         paused = self.backend.toggle_pause()
         self.pause_btn.setText("Resume" if paused else "Pause")
 
     def toggle_mute(self) -> None:
-        if not self.backend or self.current_index < 0:
+        if not self.backend:
+            return
+        if self._view_mode == "single" and self.current_index < 0:
             return
         muted = not self.backend.is_muted()
         self.backend.set_muted(muted)
+        self.grid_view.set_muted(muted)
         self.mute_btn.setText("Unmute" if muted else "Mute")
 
     def set_volume(self, value: int) -> None:
@@ -386,10 +446,129 @@ class MainWindow(QMainWindow):
         self.settings.setValue("volume", value)
         if self.backend:
             self.backend.set_volume(value)
+        if hasattr(self, "grid_view"):
+            self.grid_view.set_volume(value)
 
     def _set_status(self, status: str) -> None:
         self.status_text.setText(status)
         self.status_badge.setText(status.replace("…", ""))
+
+    def configure_grid_dialog(self) -> None:
+        dialog = GridSizeDialog(self.grid_view.rows, self.grid_view.columns, self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        rows, columns = dialog.dimensions()
+        self.activate_grid(rows, columns, reconfigure=True)
+
+    def activate_grid(self, rows: int | None = None, columns: int | None = None, reconfigure: bool = False) -> None:
+        if rows is not None and columns is not None:
+            existing = self.grid_view.stream_assignments()
+            count = rows * columns
+            assignments = existing[:count]
+            assignments.extend([None] * max(0, count - len(assignments)))
+
+            if reconfigure and self.streams:
+                used = {stream.url for stream in assignments if stream}
+                unused = [stream for stream in self.streams if stream.url not in used]
+                for i in range(len(assignments)):
+                    if assignments[i] is None and unused:
+                        assignments[i] = unused.pop(0)
+
+            self.grid_view.configure(rows, columns, assignments)
+            self.settings.setValue("grid_rows", rows)
+            self.settings.setValue("grid_columns", columns)
+
+        if self.backend:
+            self.backend.stop_primary()
+        self.viewer_stack.setCurrentWidget(self.grid_view)
+        self._view_mode = "grid"
+        self.settings.setValue("view_mode", "grid")
+        self.grid_view.set_volume(self.volume_slider.value())
+        if self.backend:
+            self.grid_view.set_muted(self.backend.is_muted())
+        self.grid_view.play_all()
+        self.stream_title.setText(f"Grid {self.grid_view.rows}×{self.grid_view.columns}")
+        active = sum(1 for stream in self.grid_view.stream_assignments() if stream)
+        self.status_text.setText(f"{active} active feed{'s' if active != 1 else ''} · drag tiles to rearrange")
+        self.status_badge.setText("Grid")
+        self.pause_btn.setText("Pause all")
+        self.pause_btn.setEnabled(active > 0)
+        self.mute_btn.setEnabled(active > 0)
+        self.grid_btn.setText(f"▦  Grid {self.grid_view.rows}×{self.grid_view.columns}")
+        self._set_view_button_state()
+        self._update_nav_buttons()
+        self._save_grid_state()
+
+    def show_single_view(self) -> None:
+        if self._view_mode == "single":
+            return
+        self.grid_view.stop_all()
+        self.viewer_stack.setCurrentWidget(self.video_frame)
+        self._view_mode = "single"
+        self.settings.setValue("view_mode", "single")
+        self.pause_btn.setText("Pause")
+        if self.current_index >= 0 and self.streams and self.backend:
+            stream = self.streams[self.current_index]
+            self.stream_title.setText(stream.name)
+            self.status_text.setText("Connecting…")
+            self.status_badge.setText("Connecting")
+            self.backend.play(stream.url)
+            self.pause_btn.setEnabled(True)
+            self.mute_btn.setEnabled(True)
+        else:
+            self.stream_title.setText("Choose a camera")
+            self.status_text.setText("Choose a camera")
+            self.status_badge.setText("Idle")
+        self._set_view_button_state()
+        self._update_nav_buttons()
+
+    def _set_view_button_state(self) -> None:
+        single_active = self._view_mode == "single"
+        self.single_view_btn.setProperty("active", single_active)
+        self.grid_btn.setProperty("active", not single_active)
+        for button in (self.single_view_btn, self.grid_btn):
+            button.style().unpolish(button)
+            button.style().polish(button)
+
+    def _grid_active_changed(self, index: int) -> None:
+        if self._view_mode != "grid":
+            return
+        stream = self.grid_view.tiles[index].stream if self.grid_view.tiles else None
+        if stream:
+            self.status_text.setText(f"Tile {index + 1}: {stream.name} · choose a camera to replace it")
+        else:
+            self.status_text.setText(f"Tile {index + 1} selected · choose a camera from the list")
+
+    def _save_grid_state(self) -> None:
+        if not hasattr(self, "grid_view"):
+            return
+        self.settings.setValue("grid_rows", self.grid_view.rows)
+        self.settings.setValue("grid_columns", self.grid_view.columns)
+        self.settings.setValue("grid_urls", self.grid_view.urls())
+
+    def _restore_grid_assignments(self) -> None:
+        if not self.streams:
+            return
+        rows = max(1, self.settings.value("grid_rows", 2, type=int))
+        columns = max(1, self.settings.value("grid_columns", 2, type=int))
+        raw_urls = self.settings.value("grid_urls", [])
+        if isinstance(raw_urls, str):
+            urls = [raw_urls] if raw_urls else []
+        else:
+            urls = list(raw_urls or [])
+
+        by_url = {stream.url: stream for stream in self.streams}
+        count = rows * columns
+        assignments: list[Stream | None] = []
+        if urls:
+            assignments = [by_url.get(url) if url else None for url in urls[:count]]
+            assignments.extend([None] * max(0, count - len(assignments)))
+        else:
+            assignments = list(self.streams[:count])
+            assignments.extend([None] * max(0, count - len(assignments)))
+        self.grid_view.configure(rows, columns, assignments)
+        self.grid_btn.setText(f"▦  Grid {rows}×{columns}")
+        self._save_grid_state()
 
     def toggle_sidebar(self) -> None:
         visible = self.sidebar.isVisible()
@@ -509,6 +688,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
         self.settings.setValue("geometry", self.saveGeometry())
+        self._save_grid_state()
         if self.backend:
             self.backend.stop()
         super().closeEvent(event)

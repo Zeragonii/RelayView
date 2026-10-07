@@ -8,6 +8,10 @@ RelayView is a small, modern desktop viewer for M3U/M3U8 camera playlists. It is
 - M3U/M3U8 playlist parsing
 - Searchable camera list
 - Click-to-switch streams
+- Arbitrary camera grids (1×2, 2×2, 6×2, and beyond)
+- Click a grid tile then choose a camera to assign it
+- Drag populated grid tiles onto each other to rearrange/swap feeds
+- Grid size and camera assignments persist across launches
 - Previous/Next navigation with wraparound
 - Pause, mute and fullscreen controls
 - Drag-and-drop playlists
@@ -25,6 +29,7 @@ RelayView is a small, modern desktop viewer for M3U/M3U8 camera playlists. It is
 | F | Fullscreen |
 | Esc | Exit fullscreen |
 | Ctrl+O | Open playlist |
+| Tab | Show / hide camera list |
 
 ## Windows releases
 
@@ -37,8 +42,8 @@ The packaged Windows build includes a trimmed VLC runtime, so a separate VLC ins
 Update the version in both `pyproject.toml` and `relayview/__init__.py`, commit it, then tag that commit:
 
 ```bash
-git tag v0.1.1
-git push origin v0.1.1
+git tag v0.1.4
+git push origin v0.1.4
 ```
 
 GitHub Actions will test the project, build the Windows application, create Velopack installer/update packages, generate a delta against the previous Velopack release when possible, and publish the GitHub Release.
@@ -65,6 +70,17 @@ pytest -q
 ## License
 
 MIT. VLC/libVLC and Qt/PySide6 retain their respective upstream licenses.
+
+
+## v0.1.4
+
+- Added configurable multi-camera grid view with independent row/column sizing (up to 32×32).
+- Existing feeds are preserved when resizing a grid; newly added cells are populated from unused playlist cameras when available.
+- Click any tile to make it active, then click a camera in the sidebar to assign or replace that tile.
+- Drag a populated tile onto another tile to swap their positions.
+- Grid dimensions and assignments are persisted by stream URL across restarts.
+- Empty tiles do not create VLC players until a stream is assigned.
+- Single-camera and grid modes can be switched from the always-visible top controls or the menu.
 
 ## v0.1.3
 

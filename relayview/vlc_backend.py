@@ -25,31 +25,18 @@ def configure_vlc_environment() -> None:
         os.environ["VLC_PLUGIN_PATH"] = str(plugins)
 
 
-class VLCBackend:
-    def __init__(self, status_callback: Callable[[str], None] | None = None) -> None:
-        configure_vlc_environment()
-        try:
-            import vlc  # Imported only after the bundled runtime path is configured.
-        except Exception as exc:  # pragma: no cover - environment specific
-            raise RuntimeError(
-                "VLC could not be loaded. Install VLC 3.x, or use the packaged RelayView build."
-            ) from exc
-
-        self.vlc = vlc
+class VLCPlayer:
+    def __init__(self, instance, vlc_module, status_callback: Callable[[str], None] | None = None) -> None:
+        self.instance = instance
+        self.vlc = vlc_module
         self._status_callback = status_callback or (lambda _status: None)
-        self.instance = vlc.Instance(
-            "--no-video-title-show",
-            "--quiet",
-            "--network-caching=250",
-            "--clock-jitter=0",
-        )
         self.player = self.instance.media_player_new()
         self._events = self.player.event_manager()
-        self._events.event_attach(vlc.EventType.MediaPlayerOpening, self._event("Connecting…"))
-        self._events.event_attach(vlc.EventType.MediaPlayerPlaying, self._event("Live"))
-        self._events.event_attach(vlc.EventType.MediaPlayerPaused, self._event("Paused"))
-        self._events.event_attach(vlc.EventType.MediaPlayerEncounteredError, self._event("Stream error"))
-        self._events.event_attach(vlc.EventType.MediaPlayerEndReached, self._event("Stream ended"))
+        self._events.event_attach(self.vlc.EventType.MediaPlayerOpening, self._event("Connecting…"))
+        self._events.event_attach(self.vlc.EventType.MediaPlayerPlaying, self._event("Live"))
+        self._events.event_attach(self.vlc.EventType.MediaPlayerPaused, self._event("Paused"))
+        self._events.event_attach(self.vlc.EventType.MediaPlayerEncounteredError, self._event("Stream error"))
+        self._events.event_attach(self.vlc.EventType.MediaPlayerEndReached, self._event("Stream ended"))
 
     def _event(self, text: str):
         def callback(_event) -> None:
@@ -76,6 +63,12 @@ class VLCBackend:
         self.player.play()
         return False
 
+    def set_paused(self, paused: bool) -> None:
+        if paused:
+            self.player.set_pause(1)
+        else:
+            self.player.set_pause(0)
+
     def stop(self) -> None:
         self.player.stop()
 
@@ -90,3 +83,76 @@ class VLCBackend:
 
     def is_muted(self) -> bool:
         return bool(self.player.audio_get_mute())
+
+
+class VLCBackend:
+    """Own one shared libVLC instance and as many players as RelayView needs."""
+
+    def __init__(self, status_callback: Callable[[str], None] | None = None) -> None:
+        configure_vlc_environment()
+        try:
+            import vlc  # Imported only after the bundled runtime path is configured.
+        except Exception as exc:  # pragma: no cover - environment specific
+            raise RuntimeError(
+                "VLC could not be loaded. Install VLC 3.x, or use the packaged RelayView build."
+            ) from exc
+
+        self.vlc = vlc
+        self.instance = vlc.Instance(
+            "--no-video-title-show",
+            "--quiet",
+            "--network-caching=250",
+            "--clock-jitter=0",
+        )
+        self.primary = VLCPlayer(self.instance, self.vlc, status_callback)
+        self._extra_players: list[VLCPlayer] = []
+
+    @property
+    def player(self):
+        """Compatibility escape hatch for existing code/tests."""
+        return self.primary.player
+
+    def create_player(self, status_callback: Callable[[str], None] | None = None) -> VLCPlayer:
+        player = VLCPlayer(self.instance, self.vlc, status_callback)
+        self._extra_players.append(player)
+        return player
+
+    def release_player(self, player: VLCPlayer) -> None:
+        try:
+            player.stop()
+        finally:
+            if player in self._extra_players:
+                self._extra_players.remove(player)
+
+    def attach_video(self, widget_id: int) -> None:
+        self.primary.attach_video(widget_id)
+
+    def play(self, url: str) -> None:
+        self.primary.play(url)
+
+    def toggle_pause(self) -> bool:
+        return self.primary.toggle_pause()
+
+    def stop_primary(self) -> None:
+        self.primary.stop()
+
+    def stop(self) -> None:
+        self.primary.stop()
+        for player in list(self._extra_players):
+            player.stop()
+
+    def set_muted(self, muted: bool) -> None:
+        self.primary.set_muted(muted)
+        for player in self._extra_players:
+            player.set_muted(muted)
+
+    def set_volume(self, volume: int) -> None:
+        self.primary.set_volume(volume)
+        for player in self._extra_players:
+            player.set_volume(volume)
+
+    def get_volume(self) -> int:
+        return self.primary.get_volume()
+
+    def is_muted(self) -> bool:
+        return self.primary.is_muted()
