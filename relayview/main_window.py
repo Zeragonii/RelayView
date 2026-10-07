@@ -1,0 +1,389 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from PySide6.QtCore import QEvent, QSettings, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QIcon, QKeySequence, QShortcut
+from PySide6.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+)
+
+from .models import Stream
+from .playlist import load_m3u
+from .vlc_backend import VLCBackend
+
+
+class MainWindow(QMainWindow):
+    vlc_status = Signal(str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("RelayView")
+        self.resize(1280, 780)
+        self.setMinimumSize(900, 560)
+        self.setAcceptDrops(True)
+
+        icon_path = Path(__file__).resolve().parent.parent / "assets" / "relayview.ico"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
+
+        self.settings = QSettings("RelayView", "RelayView")
+        self.streams: list[Stream] = []
+        self.filtered_indexes: list[int] = []
+        self.current_index = -1
+        self._fullscreen = False
+        self._sidebar_width = 288
+
+        self.vlc_status.connect(self._set_status)
+        try:
+            self.backend = VLCBackend(lambda text: self.vlc_status.emit(text))
+        except RuntimeError as exc:
+            self.backend = None
+            QTimer.singleShot(0, lambda: self._fatal_player_error(str(exc)))
+
+        self._build_ui()
+        self._bind_shortcuts()
+        self._restore()
+
+    def _fatal_player_error(self, message: str) -> None:
+        QMessageBox.critical(self, "Playback engine unavailable", message)
+
+    def _build_ui(self) -> None:
+        root = QWidget(objectName="root")
+        self.setCentralWidget(root)
+        root_layout = QHBoxLayout(root)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setChildrenCollapsible(False)
+        root_layout.addWidget(self.splitter)
+
+        # Sidebar
+        self.sidebar = QFrame(objectName="sidebar")
+        self.sidebar.setMinimumWidth(220)
+        self.sidebar.setMaximumWidth(420)
+        side = QVBoxLayout(self.sidebar)
+        side.setContentsMargins(18, 18, 14, 16)
+        side.setSpacing(12)
+
+        header = QHBoxLayout()
+        brand = QLabel("RelayView", objectName="brand")
+        header.addWidget(brand)
+        header.addStretch()
+        menu_btn = QPushButton("•••", objectName="iconButton")
+        menu_btn.setToolTip("Menu")
+        menu_btn.clicked.connect(self._show_menu)
+        header.addWidget(menu_btn)
+        side.addLayout(header)
+
+        self.playlist_label = QLabel("No playlist loaded", objectName="subtle")
+        self.playlist_label.setWordWrap(True)
+        side.addWidget(self.playlist_label)
+
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Filter cameras…")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(self._refresh_list)
+        side.addWidget(self.search)
+
+        self.camera_list = QListWidget()
+        self.camera_list.itemActivated.connect(self._activate_item)
+        self.camera_list.itemClicked.connect(self._activate_item)
+        side.addWidget(self.camera_list, 1)
+
+        open_btn = QPushButton("Open playlist", objectName="primaryButton")
+        open_btn.clicked.connect(self.open_playlist_dialog)
+        side.addWidget(open_btn)
+
+        self.splitter.addWidget(self.sidebar)
+
+        # Main player area
+        content = QWidget()
+        main = QVBoxLayout(content)
+        main.setContentsMargins(18, 18, 18, 18)
+        main.setSpacing(12)
+
+        top = QFrame(objectName="topBar")
+        top_l = QHBoxLayout(top)
+        top_l.setContentsMargins(13, 9, 10, 9)
+        self.stream_title = QLabel("Choose a camera", objectName="streamTitle")
+        self.stream_title.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        top_l.addWidget(self.stream_title)
+        top_l.addStretch()
+        self.status_badge = QLabel("Idle", objectName="liveBadge")
+        top_l.addWidget(self.status_badge)
+        main.addWidget(top)
+
+        self.video_frame = QFrame(objectName="videoFrame")
+        self.video_frame.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+        self.video_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.video_frame.setToolTip("Double-click for fullscreen")
+        self.video_frame.installEventFilter(self)
+        main.addWidget(self.video_frame, 1)
+
+        controls = QFrame(objectName="controlBar")
+        cl = QHBoxLayout(controls)
+        cl.setContentsMargins(10, 8, 10, 8)
+        cl.setSpacing(8)
+
+        self.prev_btn = QPushButton("‹  Previous")
+        self.prev_btn.clicked.connect(self.previous_stream)
+        self.prev_btn.setEnabled(False)
+        cl.addWidget(self.prev_btn)
+
+        self.pause_btn = QPushButton("Pause")
+        self.pause_btn.clicked.connect(self.toggle_pause)
+        self.pause_btn.setEnabled(False)
+        cl.addWidget(self.pause_btn)
+
+        self.next_btn = QPushButton("Next  ›")
+        self.next_btn.clicked.connect(self.next_stream)
+        self.next_btn.setEnabled(False)
+        cl.addWidget(self.next_btn)
+
+        cl.addStretch()
+        self.status_text = QLabel("Open an .m3u playlist to begin", objectName="statusText")
+        cl.addWidget(self.status_text)
+        cl.addStretch()
+
+        self.mute_btn = QPushButton("Mute")
+        self.mute_btn.clicked.connect(self.toggle_mute)
+        self.mute_btn.setEnabled(False)
+        cl.addWidget(self.mute_btn)
+
+        full_btn = QPushButton("Fullscreen")
+        full_btn.clicked.connect(self.toggle_fullscreen)
+        cl.addWidget(full_btn)
+
+        main.addWidget(controls)
+        self.splitter.addWidget(content)
+        self.splitter.setSizes([self._sidebar_width, 992])
+
+        # Attaching after native widget creation avoids the player taking over another handle.
+        QTimer.singleShot(100, self._attach_video)
+
+    def _attach_video(self) -> None:
+        if self.backend:
+            self.backend.attach_video(int(self.video_frame.winId()))
+
+    def _bind_shortcuts(self) -> None:
+        self._shortcuts: list[QShortcut] = []
+        bindings = [
+            (QKeySequence(Qt.Key.Key_Left), self.previous_stream),
+            (QKeySequence(Qt.Key.Key_Right), self.next_stream),
+            (QKeySequence(Qt.Key.Key_Space), self.toggle_pause),
+            (QKeySequence("F"), self.toggle_fullscreen),
+            (QKeySequence("M"), self.toggle_mute),
+            (QKeySequence("Ctrl+O"), self.open_playlist_dialog),
+            (QKeySequence(Qt.Key.Key_Escape), self._exit_fullscreen),
+        ]
+        for key, callback in bindings:
+            shortcut = QShortcut(key, self)
+            shortcut.activated.connect(callback)
+            self._shortcuts.append(shortcut)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt API
+        if watched is self.video_frame and event.type() == QEvent.Type.MouseButtonDblClick:
+            self.toggle_fullscreen()
+            return True
+        return super().eventFilter(watched, event)
+
+    def _show_menu(self) -> None:
+        menu = QMenu(self)
+        open_action = QAction("Open playlist…", self)
+        open_action.setShortcut(QKeySequence("Ctrl+O"))
+        open_action.triggered.connect(self.open_playlist_dialog)
+        menu.addAction(open_action)
+
+        reload_action = QAction("Reload current playlist", self)
+        reload_action.setEnabled(bool(self.settings.value("playlist_path", "")))
+        reload_action.triggered.connect(self.reload_playlist)
+        menu.addAction(reload_action)
+        menu.addSeparator()
+
+        sidebar_action = QAction("Toggle camera list", self)
+        sidebar_action.setShortcut(QKeySequence("Tab"))
+        sidebar_action.triggered.connect(self.toggle_sidebar)
+        menu.addAction(sidebar_action)
+
+        full_action = QAction("Fullscreen", self)
+        full_action.setShortcut(QKeySequence("F"))
+        full_action.triggered.connect(self.toggle_fullscreen)
+        menu.addAction(full_action)
+        menu.exec(self.sidebar.mapToGlobal(self.sidebar.rect().topRight()))
+
+    def open_playlist_dialog(self) -> None:
+        saved_path = str(self.settings.value("playlist_path", ""))
+        start = str(Path(saved_path).parent if saved_path else Path.home())
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open camera playlist",
+            start,
+            "M3U playlists (*.m3u *.m3u8);;All files (*.*)",
+        )
+        if path:
+            self.load_playlist(path)
+
+    def load_playlist(self, path: str, restore_stream: bool = False) -> None:
+        try:
+            streams = load_m3u(path)
+        except OSError as exc:
+            QMessageBox.warning(self, "Could not open playlist", str(exc))
+            return
+
+        if not streams:
+            QMessageBox.warning(self, "Empty playlist", "No stream URLs were found in that playlist.")
+            return
+
+        self.streams = streams
+        self.settings.setValue("playlist_path", path)
+        self.playlist_label.setText(Path(path).name)
+        self.playlist_label.setToolTip(path)
+        self.current_index = -1
+        self._refresh_list()
+        self._update_nav_buttons()
+        self.status_text.setText(f"{len(streams)} streams loaded")
+
+        last_url = self.settings.value("last_stream_url", "") if restore_stream else ""
+        target = next((i for i, stream in enumerate(streams) if stream.url == last_url), 0)
+        self.select_stream(target)
+
+    def reload_playlist(self) -> None:
+        path = self.settings.value("playlist_path", "")
+        if path:
+            self.load_playlist(str(path), restore_stream=True)
+
+    def _refresh_list(self) -> None:
+        needle = self.search.text().strip().lower()
+        self.camera_list.clear()
+        self.filtered_indexes.clear()
+        for index, stream in enumerate(self.streams):
+            haystack = f"{stream.name} {stream.group}".lower()
+            if needle and needle not in haystack:
+                continue
+            label = stream.name if not stream.group else f"{stream.name}\n{stream.group}"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, index)
+            item.setToolTip(stream.url)
+            self.camera_list.addItem(item)
+            self.filtered_indexes.append(index)
+            if index == self.current_index:
+                self.camera_list.setCurrentItem(item)
+
+    def _activate_item(self, item: QListWidgetItem) -> None:
+        self.select_stream(int(item.data(Qt.ItemDataRole.UserRole)))
+
+    def select_stream(self, index: int) -> None:
+        if not self.streams or self.backend is None:
+            return
+        index %= len(self.streams)
+        stream = self.streams[index]
+        self.current_index = index
+        self.stream_title.setText(stream.name)
+        self.status_text.setText("Connecting…")
+        self.status_badge.setText("Connecting")
+        self.backend.play(stream.url)
+        self.settings.setValue("last_stream_url", stream.url)
+        self.pause_btn.setEnabled(True)
+        self.mute_btn.setEnabled(True)
+        self.pause_btn.setText("Pause")
+        self._refresh_list()
+        self._update_nav_buttons()
+
+    def previous_stream(self) -> None:
+        if self.streams:
+            self.select_stream((self.current_index - 1) % len(self.streams))
+
+    def next_stream(self) -> None:
+        if self.streams:
+            self.select_stream((self.current_index + 1) % len(self.streams))
+
+    def _update_nav_buttons(self) -> None:
+        enabled = len(self.streams) > 1
+        self.prev_btn.setEnabled(enabled)
+        self.next_btn.setEnabled(enabled)
+
+    def toggle_pause(self) -> None:
+        if not self.backend or self.current_index < 0:
+            return
+        paused = self.backend.toggle_pause()
+        self.pause_btn.setText("Resume" if paused else "Pause")
+
+    def toggle_mute(self) -> None:
+        if not self.backend or self.current_index < 0:
+            return
+        muted = not self.backend.is_muted()
+        self.backend.set_muted(muted)
+        self.mute_btn.setText("Unmute" if muted else "Mute")
+
+    def _set_status(self, status: str) -> None:
+        self.status_text.setText(status)
+        self.status_badge.setText(status.replace("…", ""))
+
+    def toggle_sidebar(self) -> None:
+        visible = self.sidebar.isVisible()
+        if visible:
+            self._sidebar_width = max(220, self.sidebar.width())
+            self.sidebar.hide()
+        else:
+            self.sidebar.show()
+            self.splitter.setSizes([self._sidebar_width, max(600, self.width() - self._sidebar_width)])
+
+    def toggle_fullscreen(self) -> None:
+        if self._fullscreen:
+            self._exit_fullscreen()
+            return
+        self._fullscreen = True
+        self.sidebar.hide()
+        self.menuBar().hide()
+        self.showFullScreen()
+
+    def _exit_fullscreen(self) -> None:
+        if not self._fullscreen:
+            return
+        self._fullscreen = False
+        self.showNormal()
+        self.sidebar.show()
+
+    def _restore(self) -> None:
+        geometry = self.settings.value("geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+        path = self.settings.value("playlist_path", "")
+        if path and Path(str(path)).exists():
+            QTimer.singleShot(150, lambda: self.load_playlist(str(path), restore_stream=True))
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        self.settings.setValue("geometry", self.saveGeometry())
+        if self.backend:
+            self.backend.stop()
+        super().closeEvent(event)
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802 - Qt API
+        urls = event.mimeData().urls()
+        if any(url.toLocalFile().lower().endswith((".m3u", ".m3u8")) for url in urls):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:  # noqa: N802 - Qt API
+        for url in event.mimeData().urls():
+            path = url.toLocalFile()
+            if path.lower().endswith((".m3u", ".m3u8")):
+                self.load_playlist(path)
+                event.acceptProposedAction()
+                break

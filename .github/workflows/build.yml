@@ -1,0 +1,89 @@
+name: Build RelayView
+
+on:
+  push:
+    branches: ["main", "master"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install test dependencies
+        run: pip install pytest
+      - name: Run parser tests
+        run: pytest -q
+
+  windows:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Install VLC runtime
+        shell: powershell
+        run: choco install vlc --version=3.0.23 --no-progress -y
+
+      - name: Build RelayView
+        shell: powershell
+        run: >-
+          python -m PyInstaller
+          --noconfirm
+          --clean
+          --windowed
+          --onedir
+          --name RelayView
+          --icon assets/relayview.ico
+          --add-data "assets;assets"
+          --collect-all PySide6
+          main.py
+
+      - name: Bundle VLC
+        shell: powershell
+        run: |
+          $vlc = "C:\Program Files\VideoLAN\VLC"
+          if (!(Test-Path $vlc)) { throw "VLC installation not found at $vlc" }
+          Copy-Item -Path $vlc -Destination "dist\RelayView\vlc" -Recurse
+
+      - name: Add notices
+        shell: powershell
+        run: |
+          Copy-Item README.md "dist\RelayView\README.md"
+          Copy-Item LICENSE "dist\RelayView\LICENSE"
+
+      - name: Create Windows zip
+        shell: powershell
+        run: Compress-Archive -Path "dist\RelayView\*" -DestinationPath "dist\RelayView-Windows-x64.zip" -Force
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RelayView-Windows-x64
+          path: dist/RelayView-Windows-x64.zip
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME "dist\RelayView-Windows-x64.zip" --generate-notes --title "RelayView $env:GITHUB_REF_NAME"

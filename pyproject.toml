@@ -1,0 +1,13 @@
+[project]
+name = "relayview"
+version = "0.1.0"
+description = "A clean M3U camera stream viewer backed by libVLC"
+requires-python = ">=3.10"
+dependencies = [
+  "PySide6==6.11.2",
+  "python-vlc==3.0.21203",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
