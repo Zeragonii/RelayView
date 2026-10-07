@@ -65,3 +65,12 @@ pytest -q
 ## License
 
 MIT. VLC/libVLC and Qt/PySide6 retain their respective upstream licenses.
+
+## v0.1.2
+
+- Added an always-available **Cameras** button in the player header so the camera list can always be restored after hiding it.
+- Added a real `Tab` shortcut for toggling the camera list.
+- Fullscreen now remembers whether the camera list was visible before entering fullscreen.
+- Added a persistent 0–100 volume slider next to the mute control.
+- Updated Velopack to 1.2.161 and explicitly package Windows releases as `win-x64`.
+- Reduced the normal GitHub Actions artifact to the setup executable; full/delta packages remain on GitHub Releases for the updater.

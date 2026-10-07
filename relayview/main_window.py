@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSizePolicy,
+    QSlider,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -50,6 +51,7 @@ class MainWindow(QMainWindow):
         self.current_index = -1
         self._fullscreen = False
         self._sidebar_width = 288
+        self._sidebar_was_visible_before_fullscreen = True
         self._update_check_thread = None
         self._update_download_thread = None
 
@@ -63,6 +65,8 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._bind_shortcuts()
         self._restore()
+        if self.backend:
+            self.backend.set_volume(self.volume_slider.value())
         if self.settings.value("auto_update_check", True, type=bool):
             QTimer.singleShot(3500, lambda: self.check_for_updates(silent=True))
 
@@ -128,6 +132,11 @@ class MainWindow(QMainWindow):
         top = QFrame(objectName="topBar")
         top_l = QHBoxLayout(top)
         top_l.setContentsMargins(13, 9, 10, 9)
+        self.sidebar_btn = QPushButton("☰  Cameras", objectName="cameraToggleButton")
+        self.sidebar_btn.setToolTip("Show or hide the camera list (Tab)")
+        self.sidebar_btn.clicked.connect(self.toggle_sidebar)
+        top_l.addWidget(self.sidebar_btn)
+
         self.stream_title = QLabel("Choose a camera", objectName="streamTitle")
         self.stream_title.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         top_l.addWidget(self.stream_title)
@@ -173,6 +182,22 @@ class MainWindow(QMainWindow):
         self.mute_btn.setEnabled(False)
         cl.addWidget(self.mute_btn)
 
+        self.volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self.volume_slider.setObjectName("volumeSlider")
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setSingleStep(5)
+        self.volume_slider.setPageStep(10)
+        self.volume_slider.setFixedWidth(120)
+        self.volume_slider.setToolTip("Volume")
+        saved_volume = max(0, min(100, self.settings.value("volume", 100, type=int)))
+        self.volume_slider.setValue(saved_volume)
+        self.volume_slider.valueChanged.connect(self.set_volume)
+        cl.addWidget(self.volume_slider)
+
+        self.volume_label = QLabel(f"{saved_volume}%", objectName="volumeLabel")
+        self.volume_label.setMinimumWidth(38)
+        cl.addWidget(self.volume_label)
+
         full_btn = QPushButton("Fullscreen")
         full_btn.clicked.connect(self.toggle_fullscreen)
         cl.addWidget(full_btn)
@@ -196,6 +221,7 @@ class MainWindow(QMainWindow):
             (QKeySequence(Qt.Key.Key_Space), self.toggle_pause),
             (QKeySequence("F"), self.toggle_fullscreen),
             (QKeySequence("M"), self.toggle_mute),
+            (QKeySequence(Qt.Key.Key_Tab), self.toggle_sidebar),
             (QKeySequence("Ctrl+O"), self.open_playlist_dialog),
             (QKeySequence(Qt.Key.Key_Escape), self._exit_fullscreen),
         ]
@@ -354,6 +380,13 @@ class MainWindow(QMainWindow):
         self.backend.set_muted(muted)
         self.mute_btn.setText("Unmute" if muted else "Mute")
 
+    def set_volume(self, value: int) -> None:
+        value = max(0, min(100, int(value)))
+        self.volume_label.setText(f"{value}%")
+        self.settings.setValue("volume", value)
+        if self.backend:
+            self.backend.set_volume(value)
+
     def _set_status(self, status: str) -> None:
         self.status_text.setText(status)
         self.status_badge.setText(status.replace("…", ""))
@@ -363,15 +396,18 @@ class MainWindow(QMainWindow):
         if visible:
             self._sidebar_width = max(220, self.sidebar.width())
             self.sidebar.hide()
+            self.sidebar_btn.setText("☰  Show cameras")
         else:
             self.sidebar.show()
             self.splitter.setSizes([self._sidebar_width, max(600, self.width() - self._sidebar_width)])
+            self.sidebar_btn.setText("☰  Cameras")
 
     def toggle_fullscreen(self) -> None:
         if self._fullscreen:
             self._exit_fullscreen()
             return
         self._fullscreen = True
+        self._sidebar_was_visible_before_fullscreen = self.sidebar.isVisible()
         self.sidebar.hide()
         self.menuBar().hide()
         self.showFullScreen()
@@ -381,7 +417,12 @@ class MainWindow(QMainWindow):
             return
         self._fullscreen = False
         self.showNormal()
-        self.sidebar.show()
+        if self._sidebar_was_visible_before_fullscreen:
+            self.sidebar.show()
+            self.sidebar_btn.setText("☰  Cameras")
+        else:
+            self.sidebar.hide()
+            self.sidebar_btn.setText("☰  Show cameras")
 
     def _restore(self) -> None:
         geometry = self.settings.value("geometry")

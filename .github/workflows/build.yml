@@ -116,7 +116,7 @@ jobs:
 
       - name: Install Velopack CLI
         shell: powershell
-        run: dotnet tool install -g vpk --version 1.2.158
+        run: dotnet tool install -g vpk --version 1.2.161
 
       - name: Download previous Velopack release for delta generation
         if: startsWith(github.ref, 'refs/tags/v')
@@ -137,13 +137,14 @@ jobs:
             --mainExe "RelayView.exe" `
             --packTitle "RelayView" `
             --icon "assets\relayview.ico" `
+            --runtime win-x64 `
             --delta BestSize
 
       - name: Upload CI build artifact
         uses: actions/upload-artifact@v4
         with:
           name: RelayView-${{ steps.version.outputs.version }}-Windows-x64
-          path: Releases/*
+          path: Releases/RelayView-win-Setup.exe
           if-no-files-found: error
 
       - name: Publish Velopack GitHub Release

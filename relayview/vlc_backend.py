@@ -82,5 +82,11 @@ class VLCBackend:
     def set_muted(self, muted: bool) -> None:
         self.player.audio_set_mute(muted)
 
+    def set_volume(self, volume: int) -> None:
+        self.player.audio_set_volume(max(0, min(100, int(volume))))
+
+    def get_volume(self) -> int:
+        return int(self.player.audio_get_volume())
+
     def is_muted(self) -> bool:
         return bool(self.player.audio_get_mute())

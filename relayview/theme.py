@@ -70,6 +70,35 @@ QPushButton#primaryButton {
 }
 QPushButton#primaryButton:hover { background: #5a87ff; }
 QPushButton#iconButton { min-width: 35px; padding: 7px; }
+
+QPushButton#cameraToggleButton {
+    background: transparent;
+    border: 1px solid #273346;
+    padding: 6px 10px;
+}
+QPushButton#cameraToggleButton:hover { background: #182130; }
+QLabel#volumeLabel {
+    color: #8794a8;
+    font-size: 9pt;
+}
+QSlider#volumeSlider::groove:horizontal {
+    height: 4px;
+    background: #273346;
+    border-radius: 2px;
+}
+QSlider#volumeSlider::sub-page:horizontal {
+    background: #4c7dff;
+    border-radius: 2px;
+}
+QSlider#volumeSlider::handle:horizontal {
+    width: 14px;
+    height: 14px;
+    margin: -5px 0;
+    background: #e8edf5;
+    border: 2px solid #4c7dff;
+    border-radius: 7px;
+}
+QSlider#volumeSlider::handle:horizontal:hover { background: #ffffff; }
 QLabel#streamTitle { font-size: 13pt; font-weight: 650; color: white; }
 QLabel#liveBadge {
     color: #9df7be;
