@@ -251,3 +251,11 @@ RelayView now hosts each libVLC media player in a separate child process. The ma
 - Only processes input within an assigned, visible camera video rectangle while RelayView is foreground.
 - The existing +/− buttons, drag-to-swap and crop-based zoom are unchanged.
 - The Windows hook is removed at application shutdown; if installation fails, the footer controls continue to work.
+
+
+### v0.4.5 — Pan stability
+
+- Deferred middle-drag crop requests until after the Windows low-level mouse hook returns, avoiding synchronous VLC IPC work inside input processing.
+- Coalesces pan movement at 100ms intervals (rather than 30Hz) and sends final movement after release.
+- Zoom wheel and button controls, drag-to-swap, playback supervision and CI workflow remain unchanged.
+- Windows native-video behaviour requires real-world testing.

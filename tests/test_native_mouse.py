@@ -17,3 +17,10 @@ def test_bridge_connected_to_grid_and_scoped_to_video():
     assert 'tile.video.rect().contains(local)' in mouse
     assert 'WM_MOUSEWHEEL' in mouse and 'WM_MBUTTONDOWN' in mouse
     assert 'app.aboutToQuit.connect(self.close)' in mouse
+
+
+def test_pan_is_deferred_outside_native_hook():
+    source = (Path(__file__).parents[1] / 'relayview' / 'windows_mouse_bridge.py').read_text()
+    assert 'QTimer.singleShot(0, lambda' in source
+    assert 'self._pan_timer.setInterval(100)' in source
+    assert 'self._queue_pan(self._pan_tile, *self._pan_pending)' in source

@@ -24,7 +24,7 @@ def wheel_steps(delta: int) -> int:
 
 
 if sys.platform == 'win32':
-    from PySide6.QtCore import QObject, QPoint
+    from PySide6.QtCore import QObject, QPoint, QTimer
     from PySide6.QtWidgets import QApplication
 
     WH_MOUSE_LL = 14
@@ -54,6 +54,10 @@ if sys.platform == 'win32':
             self._wheel_remainder = 0
             self._last_pan_dispatch = 0.0
             self._pan_pending = [0, 0]
+            self._pan_timer = QTimer(self)
+            self._pan_timer.setSingleShot(True)
+            self._pan_timer.setInterval(100)  # VLC crop reconfiguration is not cheap.
+            self._pan_timer.timeout.connect(self._flush_pan)
             self._proc = _HOOKPROC(self._callback)  # Keep callback alive while hooked.
             user32 = ctypes.windll.user32
             self._user32 = user32
@@ -76,6 +80,7 @@ if sys.platform == 'win32':
                 app.aboutToQuit.connect(self.close)
 
         def close(self):
+            self._pan_timer.stop()
             if self._hook:
                 self._user32.UnhookWindowsHookEx(self._hook)
                 self._hook = None
@@ -102,6 +107,7 @@ if sys.platform == 'win32':
             if not self._active():
                 self._pan_tile = None
                 self._pan_last = None
+                self._pan_timer.stop()
                 self._wheel_remainder = 0
                 return False
             if message == WM_MOUSEWHEEL:
@@ -122,11 +128,13 @@ if sys.platform == 'win32':
                 if tile and tile.zoom.factor > 1:
                     self._pan_tile, self._pan_last = tile, pos
                     self._pan_pending = [0, 0]
-                    self._last_pan_dispatch = 0.0
+                    self._last_pan_dispatch = time.monotonic()
+                    self._pan_timer.stop()
                     log.debug('Native pan start tile=%s', tile.index)
                     return True
             elif message == WM_MOUSEMOVE and self._pan_tile is not None:
                 if self._pan_tile not in self.grid.tiles or not self._pan_tile.isVisible():
+                    self._pan_timer.stop()
                     self._pan_tile, self._pan_last = None, None
                     return False
                 dx = pos.x() - self._pan_last.x()
@@ -134,15 +142,33 @@ if sys.platform == 'win32':
                 self._pan_last = pos
                 self._pan_pending[0] += dx
                 self._pan_pending[1] += dy
-                if time.monotonic() - self._last_pan_dispatch >= 1 / 30:
-                    self._flush_pan()
+                if not self._pan_timer.isActive():
+                    self._pan_timer.start()
                 return True
             elif message == WM_MBUTTONUP and self._pan_tile is not None:
-                self._flush_pan()
+                self._pan_timer.stop()
+                # Apply the final drag position outside the low-level hook.
+                self._queue_pan(self._pan_tile, *self._pan_pending)
+                self._pan_pending = [0, 0]
                 self._pan_tile, self._pan_last = None, None
                 log.debug('Native pan ended')
                 return True
             return False
+
+        def _queue_pan(self, tile, dx, dy):
+            if tile not in self.grid.tiles or not tile.isVisible() or tile.zoom.factor <= 1:
+                return
+            if not (dx or dy):
+                return
+            # No backend commands inside a WH_MOUSE_LL callback: let Windows
+            # finish processing input first, then update VLC on the Qt loop.
+            QTimer.singleShot(0, lambda t=tile, x=dx, y=dy: self._apply_pan(t, x, y))
+
+        def _apply_pan(self, tile, dx, dy):
+            if tile not in self.grid.tiles or not tile.isVisible() or tile.zoom.factor <= 1:
+                return
+            tile.pan_by(-dx / max(1, tile.video.width()),
+                        -dy / max(1, tile.video.height()))
 
         def _flush_pan(self):
             if self._pan_tile is None:
@@ -150,9 +176,7 @@ if sys.platform == 'win32':
             dx, dy = self._pan_pending
             self._pan_pending = [0, 0]
             self._last_pan_dispatch = time.monotonic()
-            if dx or dy:
-                self._pan_tile.pan_by(-dx / max(1, self._pan_tile.video.width()),
-                                      -dy / max(1, self._pan_tile.video.height()))
+            self._queue_pan(self._pan_tile, dx, dy)
 
         def _callback(self, code, wparam, lparam):
             if code >= 0 and wparam in (WM_MOUSEWHEEL, WM_MBUTTONDOWN, WM_MOUSEMOVE, WM_MBUTTONUP):
