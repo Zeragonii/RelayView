@@ -1,3 +1,10 @@
+### v0.4.8 — Qt startup regression fix
+
+- Fixes an immediate launch failure in v0.4.7: `GridTile.eventFilter()` could run while its `video` widget had not yet been created. The event filter is now installed after constructing both native windows, and is guarded against early Qt resize events.
+- Includes a Windows Qt smoke test of grid/tile construction that runs **before** packaging the next installer; geometry tests alone did not detect this kind of event-ordering bug.
+- Keeps viewport-based zoom and pan, mouse-wheel zoom, named layouts, worker isolation, auto-recovery, and the optimised build workflow unchanged.
+- **Validation note:** We cannot execute the PySide6/Windows native video surface in this environment, so check camera playback and panning on the installed Windows release before considering viewport panning verified.
+
 ### v0.4.7 — Native viewport pan and zoom (Windows)
 
 **Change of approach:** VLC's `video_set_crop_geometry()` proved unreliable for

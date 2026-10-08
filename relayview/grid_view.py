@@ -142,7 +142,6 @@ class GridTile(QFrame):
         self.video_viewport = QFrame(objectName="gridVideoViewport")
         self.video_viewport.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
         self.video_viewport.setMinimumSize(60, 40)
-        self.video_viewport.installEventFilter(self)
         layout.addWidget(self.video_viewport, 1)
 
         self.video = QFrame(self.video_viewport, objectName="gridVideo")
@@ -151,6 +150,10 @@ class GridTile(QFrame):
         # Not managed by a layout: resize/move independently inside the viewport.
         self.video.setGeometry(0, 0, 60, 40)
         self.video.show()
+        # Installing the filter before creating self.video caused Qt's initial
+        # native Resize event to enter eventFilter() during __init__. This must
+        # happen only after both widgets exist.
+        self.video_viewport.installEventFilter(self)
 
         footer = QFrame(objectName="gridTileFooter")
         # Footer must receive mouse events: Qt otherwise disables its +/- buttons.
@@ -232,9 +235,15 @@ class GridTile(QFrame):
             self._update_zoom()
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        # Native Qt window creation may dispatch Resize before the full tile
+        # exists. Never dereference self.video until its initialisation ends.
+        video = getattr(self, "video", None)
         if obj is self.video_viewport and event.type() == QEvent.Type.Resize:
-            self._apply_zoom_geometry()
-        if obj in (self.video, self.video_viewport) and event.type() == QEvent.Type.Wheel and not sys.platform.startswith("win"):
+            if video is not None:
+                self._apply_zoom_geometry()
+        if (video is not None and obj in (video, self.video_viewport)
+                and event.type() == QEvent.Type.Wheel
+                and not sys.platform.startswith("win")):
             self.zoom_by(1 if event.angleDelta().y() > 0 else -1)
             return True
         return super().eventFilter(obj, event)
