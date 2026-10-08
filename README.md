@@ -66,6 +66,18 @@ RelayView is a small, modern desktop viewer for M3U/M3U8 camera playlists. It is
 | Ctrl+O | Open playlist |
 | Tab | Show / hide camera list |
 
+## GitHub Actions build optimisation (CI update; app remains v0.3.1)
+
+The **same** GitHub Actions workflow continues to run tests, build the Windows executable, package a Velopack installer and publish tag releases. There is no second build mode to manage.
+
+- Python downloads are cached against `requirements-dev.txt`.
+- The trimmed VLC 3.0.23 runtime is cached; Chocolatey and trimming run only when the cache is absent. Change the VLC version in both the cache key and installation command when upgrading VLC.
+- PyInstaller's Windows binary cache is retained between workflow runs, and forced `--clean` was removed. A fresh GitHub-hosted runner still rebuilds the application; the cache improves binary processing but is **not** a persistent incremental build directory.
+- Velopack delta packages use `BestSpeed` rather than `BestSize` (potentially larger update downloads in exchange for faster packaging).
+- Tests have read-only repository permissions; release publishing retains the required write permission.
+
+For the first run after this workflow change, both Windows caches will be cold. Cache entries can also be evicted by GitHub. The release trigger, version/tag validation, updater feed, and installer artifact remain unchanged.
+
 ## Windows releases
 
 RelayView uses Velopack. Install `RelayView-Setup.exe` from the latest GitHub Release once; subsequent releases can be downloaded as delta updates from inside RelayView when available.
