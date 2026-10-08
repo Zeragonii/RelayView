@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import QMimeData, QPoint, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QMimeData, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QDrag, QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -12,11 +12,14 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QMenu,
+    QToolButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
+from .zoom import ZoomState
 from .models import Stream
 from .vlc_backend import VLCBackend, VLCPlayer
 from .logging_config import get_logger, redact_url
@@ -112,6 +115,7 @@ class GridSizeDialog(QDialog):
 class GridTile(QFrame):
     clicked = Signal(int)
     swap_requested = Signal(int, int)
+    zoom_changed = Signal(int)
 
     def __init__(self, index: int, parent=None) -> None:
         super().__init__(parent)
@@ -119,6 +123,8 @@ class GridTile(QFrame):
         self.stream: Stream | None = None
         self.player: VLCPlayer | None = None
         self._drag_start = QPoint()
+        self._pan_start = QPoint()
+        self.zoom = ZoomState()
 
         self.setObjectName("gridTile")
         self.setProperty("active", False)
@@ -133,6 +139,7 @@ class GridTile(QFrame):
         self.video.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
         self.video.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.video.setMinimumSize(60, 40)
+        self.video.installEventFilter(self)
         layout.addWidget(self.video, 1)
 
         footer = QFrame(objectName="gridTileFooter")
@@ -148,6 +155,18 @@ class GridTile(QFrame):
         footer_l.addWidget(self.health_label)
         self.position_label = QLabel(str(index + 1), objectName="gridTileIndex")
         footer_l.addWidget(self.position_label)
+        self.zoom_label = QLabel("", objectName="gridTileIndex")
+        footer_l.addWidget(self.zoom_label)
+        self.zoom_out_button = QToolButton()
+        self.zoom_out_button.setText("−")
+        self.zoom_out_button.setToolTip("Zoom out this camera")
+        self.zoom_out_button.clicked.connect(lambda: self.zoom_by(-1))
+        footer_l.addWidget(self.zoom_out_button)
+        self.zoom_in_button = QToolButton()
+        self.zoom_in_button.setText("+")
+        self.zoom_in_button.setToolTip("Zoom in this camera")
+        self.zoom_in_button.clicked.connect(lambda: self.zoom_by(1))
+        footer_l.addWidget(self.zoom_in_button)
         layout.addWidget(footer)
 
     def set_active(self, active: bool) -> None:
@@ -161,14 +180,66 @@ class GridTile(QFrame):
         self.title.setText(stream.name if stream else "Empty tile")
         self.health_label.setText("Connecting" if stream else "")
         self.setToolTip(stream.url if stream else "Select this tile, then choose a camera")
+        self.zoom.reset()
+        self._update_zoom()
+
+    def _update_zoom(self) -> None:
+        self.zoom_label.setText(f"{self.zoom.factor:g}×" if self.zoom.factor > 1 else "")
+        self.zoom_changed.emit(self.index)
+
+    def zoom_by(self, steps: int) -> None:
+        if self.stream:
+            self.zoom.change(steps)
+            self._update_zoom()
+
+    def reset_zoom(self) -> None:
+        self.zoom.reset()
+        self._update_zoom()
+
+    def pan_by(self, dx: float, dy: float) -> None:
+        if self.stream and self.zoom.factor > 1:
+            self.zoom.move(dx, dy)
+            self._update_zoom()
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if obj is self.video and event.type() == QEvent.Type.Wheel:
+            self.zoom_by(1 if event.angleDelta().y() > 0 else -1)
+            return True
+        return super().eventFilter(obj, event)
+
+    def wheelEvent(self, event) -> None:  # noqa: N802
+        self.zoom_by(1 if event.angleDelta().y() > 0 else -1)
+        event.accept()
+
+    def contextMenuEvent(self, event) -> None:  # noqa: N802
+        menu = QMenu(self)
+        menu.addAction("Zoom in", lambda: self.zoom_by(1))
+        menu.addAction("Zoom out", lambda: self.zoom_by(-1))
+        menu.addAction("Reset zoom", self.reset_zoom)
+        if self.zoom.factor > 1:
+            menu.addSeparator()
+            menu.addAction("Pan left", lambda: self.pan_by(-0.2, 0))
+            menu.addAction("Pan right", lambda: self.pan_by(0.2, 0))
+            menu.addAction("Pan up", lambda: self.pan_by(0, -0.2))
+            menu.addAction("Pan down", lambda: self.pan_by(0, 0.2))
+        menu.exec(event.globalPos())
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self._pan_start = event.position().toPoint()
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start = event.position().toPoint()
             self.clicked.emit(self.index)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.buttons() & Qt.MouseButton.MiddleButton:
+            pos = event.position().toPoint()
+            delta = pos - self._pan_start
+            self._pan_start = pos
+            self.pan_by(-delta.x() / max(1, self.video.width()), -delta.y() / max(1, self.video.height()))
+            event.accept()
+            return
         if not (event.buttons() & Qt.MouseButton.LeftButton):
             return super().mouseMoveEvent(event)
         if self.stream is None:
@@ -269,6 +340,7 @@ class GridView(QWidget):
             log.debug("Created grid tile index=%s widget=%s video_widget=%s", index, id(tile), id(tile.video))
             tile.clicked.connect(self.set_active)
             tile.swap_requested.connect(self.swap_tiles)
+            tile.zoom_changed.connect(self._update_tile_zoom)
             self.tiles.append(tile)
             self.layout_grid.addWidget(tile, index // columns, index % columns)
             if index < len(old_streams):
@@ -282,6 +354,12 @@ class GridView(QWidget):
         self.set_active(min(self.active_index, count - 1))
         log.info("Grid configure complete rows=%s columns=%s tiles=%s generation=%s", self.rows, self.columns, len(self.tiles), self._generation)
         self.assignments_changed.emit()
+
+    def _update_tile_zoom(self, index: int) -> None:
+        if 0 <= index < len(self.tiles):
+            tile = self.tiles[index]
+            if tile.player:
+                tile.player.set_zoom(tile.zoom.factor, tile.zoom.cx, tile.zoom.cy)
 
     def _ensure_player(self, tile: GridTile) -> VLCPlayer | None:
         if not self.backend:
@@ -297,6 +375,7 @@ class GridView(QWidget):
             tile.player = self.backend.create_player(update_tile_health)
             tile.player.set_volume(self._volume)
             tile.player.set_muted(self._muted)
+        tile.player.set_zoom(tile.zoom.factor, tile.zoom.cx, tile.zoom.cy)
         return tile.player
 
     def _start_assigned_players(self, generation: int | None = None) -> None:

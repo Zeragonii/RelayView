@@ -1,3 +1,12 @@
+### v0.4.1 — per-tile digital zoom
+
+- Each camera grid tile has `+` / `−` zoom controls in its footer (1×–5× in 0.25× steps).
+- Mouse wheel over a Qt-managed tile area zooms. Some Windows/libVLC video child windows intercept wheel events; the footer controls are always available.
+- Right-click a tile for Reset zoom and stepwise pan directions; middle-drag pans when Qt receives the event.
+- Zoom is stored per tile while the tile/session exists, carries with tile swaps, and is restored after a VLC worker reconnects. Zoom resets on reassignment or app restart.
+- Uses libVLC 3.x `video_set_crop_geometry` inside existing isolated workers; no second decoder or stream connection.
+- **Windows validation needed:** VLC 3.x video output implementations vary in whether arbitrary crop offsets are respected. Verify zoom and panning on your RTSP cameras before deploying broadly.
+
 # RelayView
 
 ### v0.4.0 — smarter camera grids

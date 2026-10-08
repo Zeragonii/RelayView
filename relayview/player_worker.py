@@ -43,12 +43,14 @@ def _emit(event: str, **fields) -> None:
         pass
 
 
-def _report_player(player, stop_event: threading.Event) -> None:
+def _report_player(player, stop_event: threading.Event, zoom_callback=None) -> None:
     """Report native VLC state from within the isolated worker process."""
     last_state = None
     last_frames = -1
     while not stop_event.wait(1.0):
         try:
+            if zoom_callback is not None:
+                zoom_callback()
             state = str(player.get_state()).split(".")[-1]
             _emit("heartbeat", state=state)
             # libVLC video decoder statistics are unavailable for some streams.
@@ -85,8 +87,27 @@ def run_worker() -> int:
         _emit("fatal", message="VLC initialisation failed")
         return 2
 
+    # Keep the requested crop across video output reinitialisation. Some streams
+    # do not expose dimensions until the first decoded frame arrives.
+    zoom_request = {"factor": 1.0, "cx": 0.5, "cy": 0.5}
+    last_crop = object()
+
+    def apply_zoom() -> None:
+        nonlocal last_crop
+        from .zoom import ZoomState
+        try:
+            factor = float(zoom_request["factor"])
+            w, h = player.video_get_size(0)
+            state = ZoomState(factor, float(zoom_request["cx"]), float(zoom_request["cy"]))
+            crop = state.crop(w, h)
+            if crop != last_crop:
+                player.video_set_crop_geometry(crop)
+                last_crop = crop
+        except (TypeError, ValueError, AttributeError) as exc:
+            _worker_log(f"zoom unavailable: {type(exc).__name__}")
+
     stop_event = threading.Event()
-    threading.Thread(target=_report_player, args=(player, stop_event), daemon=True, name="vlc-state").start()
+    threading.Thread(target=_report_player, args=(player, stop_event, apply_zoom), daemon=True, name="vlc-state").start()
     _emit("ready")
 
     # Intentionally never call player.stop()/release() on normal teardown. The
@@ -109,11 +130,19 @@ def run_worker() -> int:
                 elif command == "play":
                     url = str(msg["url"])
                     media = instance.media_new(url)
+                    last_crop = object()
                     player.set_media(media)
                     result = player.play()
                     _worker_log(f"play returned={result}")
                     if result == -1:
                         _emit("state", value="Error")
+                elif command == "zoom":
+                    from .zoom import ZoomState
+                    state = ZoomState(float(msg.get("factor", 1.0)), float(msg.get("cx", 0.5)), float(msg.get("cy", 0.5)))
+                    state.factor = max(1.0, min(5.0, state.factor))
+                    state._clamp()
+                    zoom_request.update(factor=state.factor, cx=state.cx, cy=state.cy)
+                    apply_zoom()
                 elif command == "volume":
                     player.audio_set_volume(max(0, min(100, int(msg.get("value", 100)))))
                 elif command == "mute":
