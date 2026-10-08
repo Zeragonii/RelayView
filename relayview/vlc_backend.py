@@ -161,6 +161,7 @@ class VLCPlayer:
 
     def set_zoom(self, factor: float, cx: float = 0.5, cy: float = 0.5) -> None:
         self._zoom = (factor, cx, cy)
+        log.info("Zoom requested proxy=%s factor=%.2f center=(%.3f, %.3f)", id(self), factor, cx, cy)
         if self._process and self._process.poll() is None:
             self._send("zoom", factor=factor, cx=cx, cy=cy)
 
@@ -276,6 +277,10 @@ class VLCPlayer:
             elif kind == "fatal":
                 self._schedule_retry("VLC unavailable")
                 break
+            elif kind == "zoom_status":
+                log.info("Zoom worker pid=%s status=%s factor=%s crop=%s dimensions=%sx%s detail=%s",
+                         getattr(self._process, "pid", None), event.get("status"), event.get("factor"),
+                         event.get("crop"), event.get("width"), event.get("height"), event.get("detail"))
             elif kind == "command_error":
                 log.warning("Worker rejected command=%s", event.get("command"))
 
@@ -404,16 +409,6 @@ class VLCBackend:
         player.release()
         if player in self._extra_players:
             self._extra_players.remove(player)
-
-    def set_zoom(self, factor: float, cx: float = 0.5, cy: float = 0.5) -> None:
-        self._zoom = (factor, cx, cy)
-        if self._process and self._process.poll() is None:
-            self._send("zoom", factor=factor, cx=cx, cy=cy)
-
-    def _restore_zoom(self) -> None:
-        factor, cx, cy = getattr(self, "_zoom", (1.0, 0.5, 0.5))
-        if factor != 1.0:
-            self._send("zoom", factor=factor, cx=cx, cy=cy)
 
     def attach_video(self, widget_id: int) -> None:
         self.primary.attach_video(widget_id)

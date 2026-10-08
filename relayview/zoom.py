@@ -38,4 +38,6 @@ class ZoomState:
         h = max(1, min(height, round(height / self.factor)))
         x = max(0, min(width - w, round(self.cx * width - w / 2)))
         y = max(0, min(height - h, round(self.cy * height - h / 2)))
-        return f"{w}x{h}+{x}+{y}"
+        # VLC 3.x crop geometry treats WxH as bottom-right coordinates for
+        # offset crops, so encode (right,bottom,left,top), not (width,height,left,top).
+        return f"{x + w}x{y + h}+{x}+{y}"

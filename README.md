@@ -1,3 +1,13 @@
+### v0.4.2 — digital zoom compatibility fix
+
+- Corrected crop geometry coordinates for offset crops in libVLC 3.x.
+- Added zoom request and worker acknowledgement logging in the main RelayView log.
+- Added one-time logging for unavailable video dimensions and VLC errors.
+- Serialized worker zoom operations to avoid overlapping crop commands.
+- Removed two misplaced backend methods that referenced nonexistent attributes.
+
+**Known limitation:** VLC 3.x video output implementations can interpret crop geometry differently. This fix is based on documented VLC 3.x crop behaviour; it needs testing with the installed Windows runtime. `player-workers.log` remains available for worker-side messages.
+
 ### v0.4.1 — per-tile digital zoom
 
 - Each camera grid tile has `+` / `−` zoom controls in its footer (1×–5× in 0.25× steps).

@@ -91,20 +91,34 @@ def run_worker() -> int:
     # do not expose dimensions until the first decoded frame arrives.
     zoom_request = {"factor": 1.0, "cx": 0.5, "cy": 0.5}
     last_crop = object()
+    last_zoom_note = object()
+    zoom_lock = threading.RLock()
 
     def apply_zoom() -> None:
-        nonlocal last_crop
+        nonlocal last_crop, last_zoom_note
         from .zoom import ZoomState
-        try:
-            factor = float(zoom_request["factor"])
-            w, h = player.video_get_size(0)
-            state = ZoomState(factor, float(zoom_request["cx"]), float(zoom_request["cy"]))
-            crop = state.crop(w, h)
-            if crop != last_crop:
-                player.video_set_crop_geometry(crop)
-                last_crop = crop
-        except (TypeError, ValueError, AttributeError) as exc:
-            _worker_log(f"zoom unavailable: {type(exc).__name__}")
+        with zoom_lock:
+            try:
+                factor = float(zoom_request["factor"])
+                w, h = player.video_get_size(0)
+                state = ZoomState(factor, float(zoom_request["cx"]), float(zoom_request["cy"]))
+                crop = state.crop(w, h)
+                if factor > 1.0 and crop is None:
+                    if last_zoom_note != "dimensions-pending":
+                        _emit("zoom_status", status="dimensions-pending", width=w, height=h, factor=factor)
+                        last_zoom_note = "dimensions-pending"
+                    return
+                if crop != last_crop:
+                    player.video_set_crop_geometry(crop)
+                    last_crop = crop
+                    last_zoom_note = crop
+                    _emit("zoom_status", status="applied", crop=crop, width=w, height=h, factor=factor)
+            except Exception as exc:
+                note = ("error", type(exc).__name__)
+                if last_zoom_note != note:
+                    _worker_log(f"zoom failed: {exc!r}")
+                    _emit("zoom_status", status="error", detail=type(exc).__name__)
+                    last_zoom_note = note
 
     stop_event = threading.Event()
     threading.Thread(target=_report_player, args=(player, stop_event, apply_zoom), daemon=True, name="vlc-state").start()
@@ -141,7 +155,10 @@ def run_worker() -> int:
                     state = ZoomState(float(msg.get("factor", 1.0)), float(msg.get("cx", 0.5)), float(msg.get("cy", 0.5)))
                     state.factor = max(1.0, min(5.0, state.factor))
                     state._clamp()
-                    zoom_request.update(factor=state.factor, cx=state.cx, cy=state.cy)
+                    with zoom_lock:
+                        zoom_request.update(factor=state.factor, cx=state.cx, cy=state.cy)
+                        last_crop = object()
+                        last_zoom_note = object()
                     apply_zoom()
                 elif command == "volume":
                     player.audio_set_volume(max(0, min(100, int(msg.get("value", 100)))))

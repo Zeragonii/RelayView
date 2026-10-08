@@ -12,13 +12,13 @@ def test_zoom_bounds_and_reset():
 
 def test_crop_center():
     state = ZoomState(2)
-    assert state.crop(1920, 1080) == "960x540+480+270"
+    assert state.crop(1920, 1080) == "1440x810+480+270"
 
 
 def test_pan_clamped_to_video():
     state = ZoomState(2)
     state.move(100, 100)
-    assert state.crop(1920, 1080) == "960x540+960+540"
+    assert state.crop(1920, 1080) == "1920x1080+960+540"
     state.move(-100, -100)
     assert state.crop(1920, 1080) == "960x540+0+0"
 
