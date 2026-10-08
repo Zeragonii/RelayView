@@ -49,3 +49,19 @@ def test_serialization_preserves_order_and_edits():
     assert output.index("Garage") < output.index("Kitchen")
     assert 'group-title="Outside"' in output
     assert 'relayview-favorite="1"' in output
+
+
+def test_extinf_display_name_with_commas_roundtrips():
+    from relayview.playlist import serialize_m3u
+    source = '#EXTM3U\n#EXTINF:-1 tvg-name="One, Two",Front, Entrance, West\nrtsp://example/cam\n'
+    streams = parse_m3u_text(source)
+    assert streams[0].name == "Front, Entrance, West"
+    assert parse_m3u_text(serialize_m3u(streams))[0].name == streams[0].name
+
+
+def test_newline_in_stream_url_is_rejected():
+    import pytest
+    from relayview.models import Stream
+    from relayview.playlist import serialize_m3u
+    with pytest.raises(ValueError):
+        serialize_m3u([Stream(name="Camera", url="rtsp://example/cam\n#EXTINF:-1,Injected")])

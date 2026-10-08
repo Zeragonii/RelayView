@@ -1,4 +1,12 @@
+import time
 from relayview.vlc_backend import VLCPlayer
+
+
+def await_reap(proc):
+    deadline = time.monotonic() + 2
+    while not proc.terminated and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert proc.terminated
 
 
 class FakeProcess:
@@ -41,7 +49,7 @@ def test_stop_terminates_worker_instead_of_native_vlc_stop():
     wrapper = make_player()
     proc = wrapper._process
     wrapper.stop(detach=True)
-    assert proc.terminated is True
+    await_reap(proc)
     assert wrapper._process is None
     assert wrapper._attached_handle is None
 
@@ -51,5 +59,39 @@ def test_release_is_idempotent_after_worker_termination():
     proc = wrapper._process
     wrapper.release()
     wrapper.release()
-    assert proc.terminated is True
+    await_reap(proc)
     assert wrapper._process is None
+
+
+def test_unexpected_worker_exit_is_detected():
+    messages = []
+    wrapper = make_player()
+    wrapper._status_callback = messages.append
+    wrapper._process.returncode = 17
+    assert wrapper.check_health() is False
+    assert wrapper._process is None
+    assert messages == ["Playback worker exited (code 17)"]
+    assert wrapper.check_health() is True
+
+
+def test_termination_does_not_wait_for_slow_process():
+    import threading
+
+    class SlowProcess(FakeProcess):
+        def __init__(self):
+            super().__init__()
+            self.gate = threading.Event()
+
+        def wait(self, timeout=None):
+            self.gate.wait(timeout=0.25)
+            return self.returncode
+
+    wrapper = make_player()
+    proc = SlowProcess()
+    wrapper._process = proc
+    start = time.monotonic()
+    wrapper.terminate()
+    assert time.monotonic() - start < 0.15
+    assert wrapper._process is None
+    proc.gate.set()
+    await_reap(proc)

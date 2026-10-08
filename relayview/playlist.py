@@ -22,7 +22,17 @@ def _fallback_name(url: str, index: int) -> str:
 def _parse_extinf(line: str) -> tuple[str, dict[str, str]]:
     body = line.split(":", 1)[1] if ":" in line else ""
     attrs = dict(_ATTR_RE.findall(body))
-    display = body.rsplit(",", 1)[1].strip() if "," in body else ""
+    # EXTINF names can themselves contain commas; only the first unquoted
+    # comma separates attributes from the display name.
+    quoted = False
+    separator = None
+    for index, character in enumerate(body):
+        if character == '"':
+            quoted = not quoted
+        elif character == "," and not quoted:
+            separator = index
+            break
+    display = body[separator + 1:].strip() if separator is not None else ""
     name = display or attrs.get("tvg-name", "")
     return name, attrs
 
@@ -110,8 +120,12 @@ def serialize_m3u(streams: list[Stream]) -> str:
 
         attr_text = " ".join(f'{key}="{_escape_attr(value)}"' for key, value in attrs.items())
         prefix = f"#EXTINF:-1 {attr_text}" if attr_text else "#EXTINF:-1"
-        lines.append(f"{prefix},{stream.name}")
-        lines.append(stream.url)
+        display_name = str(stream.name).replace("\r", " ").replace("\n", " ")
+        url = str(stream.url)
+        if "\r" in url or "\n" in url:
+            raise ValueError("Stream URL must not contain line breaks")
+        lines.append(f"{prefix},{display_name}")
+        lines.append(url.strip())
     return "\n".join(lines) + "\n"
 
 
@@ -125,5 +139,9 @@ def save_m3u(path: str | Path, streams: list[Stream]) -> None:
     with NamedTemporaryFile("w", encoding="utf-8", newline="\n", delete=False, dir=path.parent, suffix=".tmp") as temp:
         temp.write(content)
         temp_path = Path(temp.name)
-    temp_path.replace(path)
+    try:
+        temp_path.replace(path)
+    finally:
+        # Do not leave credential-bearing temporary playlists on failed writes.
+        temp_path.unlink(missing_ok=True)
     log.info("Playlist save complete path=%s", path)

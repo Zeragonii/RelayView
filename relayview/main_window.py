@@ -71,6 +71,12 @@ class MainWindow(QMainWindow):
             self.backend = None
             QTimer.singleShot(0, lambda: self._fatal_player_error(str(exc)))
 
+        # Lightweight crash detection on the Qt thread (no worker GUI callbacks).
+        self._worker_watchdog = QTimer(self)
+        self._worker_watchdog.setInterval(1000)
+        self._worker_watchdog.timeout.connect(self._poll_workers)
+        self._worker_watchdog.start()
+
         self._build_ui()
         self._bind_shortcuts()
         self._restore()
@@ -78,6 +84,15 @@ class MainWindow(QMainWindow):
             self.backend.set_volume(self.volume_slider.value())
         if self.settings.value("auto_update_check", True, type=bool):
             QTimer.singleShot(3500, lambda: self.check_for_updates(silent=True))
+
+    def _poll_workers(self) -> None:
+        if not self.backend:
+            return
+        if self._view_mode == "single":
+            self.backend.primary.check_health()
+        else:
+            for player in list(self.backend._extra_players):
+                player.check_health()
 
     def _fatal_player_error(self, message: str) -> None:
         QMessageBox.critical(self, "Playback engine unavailable", message)

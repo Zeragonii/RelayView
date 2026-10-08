@@ -1,5 +1,16 @@
 # RelayView
 
+### v0.2.3 — playback lifecycle maintenance
+
+- Worker termination and OS-process reaping no longer wait on the GUI thread.
+- A lightweight Qt timer detects unexpected playback-worker exits and reports the exit code in single-view status (grid failures are logged).
+- Playback commands no longer implicitly create new workers after a stop.
+- EXTINF display names with commas parse correctly; playlist serialization rejects multiline stream URLs.
+- Conservative URL sanitisation now masks URL paths, fragments, and **all** query values in application logging.
+- Lifecycle, parsing, and redaction regression tests expanded.
+
+**Scope:** This is source-only; Windows GUI, actual VLC playback and Velopack installer/update operation still require testing on Windows. Automatic restart and media-level health checks are planned for v0.3.0.
+
 ### v0.2.2 — playback isolation
 - Runs every VLC player in an isolated RelayView child process.
 - Grid/single transitions terminate workers instead of calling native `libvlc_media_player_stop()`.

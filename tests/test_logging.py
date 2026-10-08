@@ -8,7 +8,8 @@ def test_redact_url_credentials_and_secrets():
     assert "password" not in redacted
     assert "abc123" not in redacted
     assert "example.local:8554" in redacted
-    assert "quality=high" in redacted
+    assert "quality=" in redacted
+    assert "quality=high" not in redacted
 
 
 def test_log_level_switching():

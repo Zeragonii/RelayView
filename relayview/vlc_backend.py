@@ -84,8 +84,10 @@ class VLCPlayer:
 
     def _send(self, command: str, **payload) -> bool:
         with self._lock:
-            self._spawn()
             proc = self._process
+            if proc is None:
+                log.warning("Cannot send %s: no playback worker", command)
+                return False
             if not proc or not proc.stdin or proc.poll() is not None:
                 log.error("Playback worker unavailable proxy=%s command=%s", id(self), command)
                 return False
@@ -138,35 +140,62 @@ class VLCPlayer:
         if self._process and self._process.poll() is None:
             self._send("attach", hwnd=0)
 
-    def terminate(self) -> None:
-        """Terminate the worker without asking libVLC to stop/release."""
-        proc = self._process
-        self._process = None
-        if not proc:
-            return
-        if proc.poll() is not None:
-            log.debug("Playback worker already exited proxy=%s pid=%s rc=%s", id(self), proc.pid, proc.returncode)
-            return
-        log.warning("Terminating playback worker proxy=%s pid=%s", id(self), proc.pid)
+    @staticmethod
+    def _reap_worker(proc: subprocess.Popen[str]) -> None:
+        """Reap a detached worker off the GUI thread, with bounded escalation."""
         try:
-            proc.terminate()
-            proc.wait(timeout=1.5)
-            log.info("Playback worker terminated proxy=%s pid=%s rc=%s", id(self), proc.pid, proc.returncode)
-        except subprocess.TimeoutExpired:
-            log.warning("Playback worker did not terminate promptly; killing pid=%s", proc.pid)
-            proc.kill()
-            try:
-                proc.wait(timeout=1.0)
-            except subprocess.TimeoutExpired:
-                log.error("Playback worker still present after kill pid=%s", proc.pid)
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=1.5)
+                except subprocess.TimeoutExpired:
+                    log.warning("Worker pid=%s did not exit; killing", proc.pid)
+                    proc.kill()
+                    proc.wait(timeout=1.0)
+            else:
+                proc.wait(timeout=0)
+            log.debug("Playback worker reaped pid=%s rc=%s", proc.pid, proc.returncode)
         except Exception:
-            log.exception("Playback worker termination failed proxy=%s pid=%s", id(self), proc.pid)
+            log.exception("Playback worker cleanup failed pid=%s", proc.pid)
         finally:
             try:
                 if proc.stdin:
                     proc.stdin.close()
-            except Exception:
+            except (OSError, ValueError):
                 pass
+
+    def check_health(self) -> bool:
+        """Poll worker without restarting it; safe to call from the UI's timer."""
+        proc = self._process
+        if proc is None:
+            return True  # intentionally stopped / not started
+        code = proc.poll()
+        if code is None:
+            return True
+        if self._process is proc:
+            self._process = None
+            log.error("Playback worker exited unexpectedly proxy=%s pid=%s rc=%s", id(self), proc.pid, code)
+            self._status_callback("Playback worker exited (code %s)" % code)
+            self._reap_worker_async(proc)
+        return False
+
+    @staticmethod
+    def _reap_worker_async(proc: subprocess.Popen[str]) -> None:
+        threading.Thread(target=VLCPlayer._reap_worker, args=(proc,),
+                         name=f"VLC-reaper-{proc.pid}", daemon=True).start()
+
+    def terminate(self) -> None:
+        """Detach the child immediately and do OS process teardown in the background.
+
+        Never call libVLC stop()/release() in this process.
+        """
+        with self._lock:
+            proc = self._process
+            self._process = None
+        if proc is None:
+            return
+        log.info("Scheduling playback worker termination proxy=%s pid=%s", id(self), proc.pid)
+        self._reap_worker_async(proc)
 
     def stop(self, *, detach: bool = True) -> None:
         # Compatibility alias. Crucially, this does NOT invoke libVLC stop().

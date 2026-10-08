@@ -6,7 +6,7 @@ import re
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 _LOGGER_NAME = "relayview"
 _current_log: Path | None = None
@@ -86,18 +86,24 @@ def get_logger(component: str) -> logging.Logger:
 
 
 def redact_url(value: str) -> str:
-    """Remove credentials and obvious secret query values before logging a URL."""
+    """Conservatively remove potentially secret parts of a media URL for logging.
+
+    Retain host and port, but never log URL paths, fragments or query values:
+    vendor-specific stream paths and query keys frequently contain credentials.
+    """
     try:
         parts = urlsplit(value)
-        if not parts.scheme:
-            return value
-        host = parts.hostname or ""
+        if not parts.scheme or not parts.hostname:
+            return "<redacted-url>"
+        host = parts.hostname
+        if ":" in host:
+            host = f"[{host}]"
         if parts.port:
             host += f":{parts.port}"
-        query = re.sub(r"(?i)(token|key|password|passwd|secret|auth)=([^&]+)", r"\1=<redacted>", parts.query)
-        return urlunsplit((parts.scheme, host, parts.path, query, parts.fragment))
+        query = urlencode([(key, "<redacted>") for key, _ in parse_qsl(parts.query, keep_blank_values=True)])
+        return urlunsplit((parts.scheme, host, "/<redacted>" if parts.path else "", query, ""))
     except Exception:
-        return "<unparseable-url>"
+        return "<redacted-url>"
 
 
 def install_exception_hook() -> None:
