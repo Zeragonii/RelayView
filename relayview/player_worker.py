@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -32,6 +34,31 @@ def _configure_vlc() -> None:
             os.environ["VLC_PLUGIN_PATH"] = str(plugins)
 
 
+def _emit(event: str, **fields) -> None:
+    # stdout is exclusively for protocol messages; logs go to the worker logfile.
+    try:
+        sys.stdout.write(json.dumps({"event": event, **fields}, separators=(",", ":")) + "\n")
+        sys.stdout.flush()
+    except (BrokenPipeError, OSError):
+        pass
+
+
+def _report_player(player, stop_event: threading.Event) -> None:
+    """Report native VLC state from within the isolated worker process."""
+    last_state = None
+    while not stop_event.wait(1.0):
+        try:
+            state = str(player.get_state()).split(".")[-1]
+            _emit("heartbeat", state=state)
+            if state != last_state:
+                _emit("state", value=state)
+                last_state = state
+        except Exception as exc:
+            _worker_log(f"state polling failed: {type(exc).__name__}")
+            _emit("state", value="Error")
+            return
+
+
 def run_worker() -> int:
     _worker_log("worker starting")
     try:
@@ -41,7 +68,12 @@ def run_worker() -> int:
         player = instance.media_player_new()
     except Exception as exc:
         _worker_log(f"initialisation failed: {exc!r}")
+        _emit("fatal", message="VLC initialisation failed")
         return 2
+
+    stop_event = threading.Event()
+    threading.Thread(target=_report_player, args=(player, stop_event), daemon=True, name="vlc-state").start()
+    _emit("ready")
 
     # Intentionally never call player.stop()/release() on normal teardown. The
     # parent process terminates this worker to let Windows reclaim native libVLC
@@ -66,6 +98,8 @@ def run_worker() -> int:
                     player.set_media(media)
                     result = player.play()
                     _worker_log(f"play returned={result}")
+                    if result == -1:
+                        _emit("state", value="Error")
                 elif command == "volume":
                     player.audio_set_volume(max(0, min(100, int(msg.get("value", 100)))))
                 elif command == "mute":
@@ -73,13 +107,15 @@ def run_worker() -> int:
                 elif command == "pause":
                     player.set_pause(1 if bool(msg.get("value", False)) else 0)
                 elif command == "ping":
-                    pass
+                    _emit("pong")
             except Exception as exc:
-                _worker_log(f"command failed: {exc!r}")
+                _worker_log(f"command failed: {type(exc).__name__}")
+                _emit("command_error", command=command)
     except Exception as exc:
         _worker_log(f"worker loop failed: {exc!r}")
         return 3
 
+    stop_event.set()
     _worker_log("stdin closed; exiting without libVLC teardown")
     os._exit(0)
 

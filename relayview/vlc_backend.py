@@ -5,6 +5,8 @@ import os
 import subprocess
 import sys
 import threading
+import time
+from collections import deque
 from pathlib import Path
 from typing import Callable
 
@@ -55,6 +57,14 @@ class VLCPlayer:
         self._paused = False
         self._current_url: str | None = None
         self._lock = threading.Lock()
+        self._events = deque(maxlen=128)
+        self._generation = 0
+        self._last_event = 0.0
+        self._starting_at = 0.0
+        self._retry_at = 0.0
+        self._failures = 0
+        self._reported_state = "Idle"
+        self._enabled = False
         log.debug("Created isolated VLCPlayer proxy id=%s", id(self))
 
     @property
@@ -73,14 +83,52 @@ class VLCPlayer:
         self._process = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
             bufsize=1,
             creationflags=creationflags,
         )
+        self._generation += 1
+        generation = self._generation
+        self._starting_at = time.monotonic()
+        self._last_event = self._starting_at
+        self._reported_state = "Connecting"
+        threading.Thread(target=self._read_events, args=(self._process, generation),
+                         name=f"VLC-events-{self._process.pid}", daemon=True).start()
         log.info("Playback worker started proxy=%s pid=%s", id(self), self._process.pid)
+
+    def _read_events(self, proc: subprocess.Popen[str], generation: int) -> None:
+        """Only the UI watchdog consumes events; never invoke Qt callbacks here."""
+        try:
+            if proc.stdout:
+                for raw in proc.stdout:
+                    try:
+                        event = json.loads(raw)
+                        if isinstance(event, dict):
+                            with self._lock:
+                                self._events.append((generation, event, time.monotonic()))
+                    except (ValueError, TypeError):
+                        log.warning("Invalid playback worker protocol event pid=%s", proc.pid)
+        except (OSError, ValueError):
+            pass
+        finally:
+            if proc.stdout:
+                proc.stdout.close()
+
+    def _announce(self, state: str) -> None:
+        if self._reported_state != state:
+            self._reported_state = state
+            self._status_callback(state)
+
+    def _schedule_retry(self, reason: str) -> None:
+        self._failures += 1
+        delay = min(30.0, 2.0 ** min(self._failures - 1, 5))
+        self._retry_at = time.monotonic() + delay
+        log.warning("Worker recovery scheduled reason=%s retry_in=%.1fs", reason, delay)
+        self._announce(f"{reason} — retry in {delay:g}s")
+        self.terminate()
 
     def _send(self, command: str, **payload) -> bool:
         with self._lock:
@@ -114,6 +162,9 @@ class VLCPlayer:
         if self._process and self._process.poll() is None:
             log.debug("Replacing playback worker before new stream proxy=%s", id(self))
             self.terminate()
+        self._enabled = True
+        self._failures = 0
+        self._retry_at = 0.0
         self._current_url = url
         self._paused = False
         self._spawn()
@@ -123,7 +174,7 @@ class VLCPlayer:
         self._send("mute", value=self._muted)
         log.info("Play isolated player=%s url=%s", id(self), redact_url(url))
         self._send("play", url=url)
-        self._status_callback("Connecting…")
+        self._announce("Connecting…")
 
     def toggle_pause(self) -> bool:
         self._paused = not self._paused
@@ -165,19 +216,57 @@ class VLCPlayer:
                 pass
 
     def check_health(self) -> bool:
-        """Poll worker without restarting it; safe to call from the UI's timer."""
+        """Run from Qt's watchdog only; delivers events and supervises retries."""
+        now = time.monotonic()
+        with self._lock:
+            pending = list(self._events)
+            self._events.clear()
+        for generation, event, timestamp in pending:
+            if generation != self._generation or not self._enabled:
+                continue
+            self._last_event = max(self._last_event, timestamp)
+            kind = event.get("event")
+            if kind == "state":
+                state = str(event.get("value", "Unknown"))
+                if state in ("Playing", "Paused", "Buffering", "Opening"):
+                    self._announce(state)
+                    if state == "Playing":
+                        self._failures = 0
+                elif state == "Error":
+                    self._schedule_retry("Playback error")
+                    break
+            elif kind == "fatal":
+                self._schedule_retry("VLC unavailable")
+                break
+            elif kind == "command_error":
+                log.warning("Worker rejected command=%s", event.get("command"))
+
         proc = self._process
-        if proc is None:
-            return True  # intentionally stopped / not started
-        code = proc.poll()
-        if code is None:
+        if proc is not None:
+            code = proc.poll()
+            if code is not None:
+                log.error("Worker exited unexpectedly pid=%s exit=%s", proc.pid, code)
+                self._schedule_retry(f"Worker exited ({code})") if self._enabled else self.terminate()
+                return False
+            if self._enabled and now - self._last_event > 10.0:
+                self._schedule_retry("Worker unresponsive")
+                return False
             return True
-        if self._process is proc:
-            self._process = None
-            log.error("Playback worker exited unexpectedly proxy=%s pid=%s rc=%s", id(self), proc.pid, code)
-            self._status_callback("Playback worker exited (code %s)" % code)
-            self._reap_worker_async(proc)
-        return False
+        if self._enabled and self._current_url and now >= self._retry_at:
+            try:
+                self._spawn()
+                if self._attached_handle is not None:
+                    self._send("attach", hwnd=self._attached_handle)
+                self._send("volume", value=self._volume)
+                self._send("mute", value=self._muted)
+                self._send("play", url=self._current_url)
+                if self._paused:
+                    self._send("pause", value=True)
+                self._announce("Reconnecting…")
+            except OSError:
+                log.exception("Unable to launch playback worker")
+                self._schedule_retry("Worker launch failed")
+        return self._process is not None or not self._enabled
 
     @staticmethod
     def _reap_worker_async(proc: subprocess.Popen[str]) -> None:
@@ -192,12 +281,15 @@ class VLCPlayer:
         with self._lock:
             proc = self._process
             self._process = None
+            self._generation += 1
         if proc is None:
             return
         log.info("Scheduling playback worker termination proxy=%s pid=%s", id(self), proc.pid)
         self._reap_worker_async(proc)
 
     def stop(self, *, detach: bool = True) -> None:
+        self._enabled = False
+        self._retry_at = 0.0
         # Compatibility alias. Crucially, this does NOT invoke libVLC stop().
         if detach:
             self._attached_handle = None
@@ -205,6 +297,8 @@ class VLCPlayer:
         self.terminate()
 
     def release(self) -> None:
+        self._enabled = False
+        self._retry_at = 0.0
         log.debug("Release proxy=%s implemented as worker termination", id(self))
         self.terminate()
 

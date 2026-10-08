@@ -141,6 +141,9 @@ class GridTile(QFrame):
         self.title = QLabel("Empty tile", objectName="gridTileTitle")
         self.title.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         footer_l.addWidget(self.title, 1)
+        self.health_label = QLabel("", objectName="gridTileIndex")
+        self.health_label.setToolTip("Playback status")
+        footer_l.addWidget(self.health_label)
         self.position_label = QLabel(str(index + 1), objectName="gridTileIndex")
         footer_l.addWidget(self.position_label)
         layout.addWidget(footer)
@@ -154,6 +157,7 @@ class GridTile(QFrame):
     def set_stream_label(self, stream: Stream | None) -> None:
         self.stream = stream
         self.title.setText(stream.name if stream else "Empty tile")
+        self.health_label.setText("Connecting" if stream else "")
         self.setToolTip(stream.url if stream else "Select this tile, then choose a camera")
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
@@ -268,7 +272,13 @@ class GridView(QWidget):
             return None
         if tile.player is None:
             log.debug("Allocating player for tile=%s", tile.index)
-            tile.player = self.backend.create_player()
+            def update_tile_health(status: str, target=tile) -> None:
+                # Called by the Qt watchdog, not from the worker's stdout thread.
+                if target in self.tiles and target.stream:
+                    compact = status.replace("…", "").split(" — ")[0]
+                    target.health_label.setText(compact)
+                    target.health_label.setToolTip(status)
+            tile.player = self.backend.create_player(update_tile_health)
             tile.player.set_volume(self._volume)
             tile.player.set_muted(self._muted)
         return tile.player

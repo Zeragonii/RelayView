@@ -1,15 +1,22 @@
 # RelayView
 
+### v0.3.0 — playback supervision (source release)
+
+- **Bidirectional child-worker protocol:** JSON-lines on stdin/stdout. Workers send `ready`, `state`, `heartbeat`, `fatal` and `command_error` events. stdout has a dedicated reader thread, and Qt callbacks execute on the existing UI watchdog timer.
+- **Playback status:** VLC's `Playing`, `Paused`, `Buffering`, and `Opening` states appear in single-view status and on each grid tile.
+- **Automatic recovery:** unexpected worker exit, VLC `Error` or a worker becoming unresponsive schedules a fresh isolated worker. Retries back off from 1 second up to 30 seconds. Explicit stop/release disables recovery.
+- **Generation filtering:** messages left over from terminated workers cannot change the status of a replacement process.
+- **Native isolation preserved:** the GUI never loads libVLC; shutdown/teardown still occurs by terminating separate workers.
+- **Regression tests** include state reporting, worker exits, ignored stale protocol events, error backoff and intentional stop.
+
+**Important limitations:** the heartbeat measures whether the worker's VLC state polling responds; it does not verify that actual video frames are advancing. Some streams can remain reported `Playing` despite a frozen picture. The worker status thread invokes VLC state polling; this needs a Windows RTSP endurance test. There is no compiled Windows installer in this source package. Test single view and 2×2 / 4×4 layouts against actual RTSP streams before publishing an automatic update.
+
 ### v0.2.3 — playback lifecycle maintenance
 
 - Worker termination and OS-process reaping no longer wait on the GUI thread.
-- A lightweight Qt timer detects unexpected playback-worker exits and reports the exit code in single-view status (grid failures are logged).
-- Playback commands no longer implicitly create new workers after a stop.
-- EXTINF display names with commas parse correctly; playlist serialization rejects multiline stream URLs.
-- Conservative URL sanitisation now masks URL paths, fragments, and **all** query values in application logging.
-- Lifecycle, parsing, and redaction regression tests expanded.
-
-**Scope:** This is source-only; Windows GUI, actual VLC playback and Velopack installer/update operation still require testing on Windows. Automatic restart and media-level health checks are planned for v0.3.0.
+- A lightweight Qt timer detects unexpected playback-worker exits.
+- Playback commands no longer implicitly create workers after an explicit stop.
+- Playlist and logging hardening, with lifecycle regression tests.
 
 ### v0.2.2 — playback isolation
 - Runs every VLC player in an isolated RelayView child process.
