@@ -156,8 +156,9 @@ def run_worker() -> int:
                     state.factor = max(1.0, min(5.0, state.factor))
                     state._clamp()
                     with zoom_lock:
-                        zoom_request.update(factor=state.factor, cx=state.cx, cy=state.cy)
-                        last_crop = object()
+                        next_request = dict(factor=state.factor, cx=state.cx, cy=state.cy)
+                        if next_request != zoom_request:
+                            zoom_request.update(next_request)
                         last_zoom_note = object()
                     apply_zoom()
                 elif command == "volume":

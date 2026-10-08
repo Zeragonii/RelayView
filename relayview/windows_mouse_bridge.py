@@ -50,10 +50,12 @@ if sys.platform == 'win32':
             self.grid = grid
             self._hook = None
             self._pan_tile = None
-            self._pan_last = None
+            self._pan_origin = None
+            self._pan_center = None
+            self._pan_target = None
             self._wheel_remainder = 0
-            self._last_pan_dispatch = 0.0
-            self._pan_pending = [0, 0]
+            
+            
             self._pan_timer = QTimer(self)
             self._pan_timer.setSingleShot(True)
             self._pan_timer.setInterval(100)  # VLC crop reconfiguration is not cheap.
@@ -103,11 +105,16 @@ if sys.platform == 'win32':
                     return tile
             return None
 
+        def _clear_pan(self):
+            self._pan_timer.stop()
+            self._pan_tile = None
+            self._pan_origin = None
+            self._pan_center = None
+            self._pan_target = None
+
         def _handle(self, message, pos, mouse_data):
             if not self._active():
-                self._pan_tile = None
-                self._pan_last = None
-                self._pan_timer.stop()
+                self._clear_pan()
                 self._wheel_remainder = 0
                 return False
             if message == WM_MOUSEWHEEL:
@@ -122,61 +129,64 @@ if sys.platform == 'win32':
                 if steps:
                     log.debug('Native wheel tile=%s steps=%s', tile.index, steps)
                     tile.zoom_by(steps)
-                return True  # Do not let VLC interpret wheel as volume adjustment.
+                return True
             if message == WM_MBUTTONDOWN:
                 tile = self._tile_at(pos)
                 if tile and tile.zoom.factor > 1:
-                    self._pan_tile, self._pan_last = tile, pos
-                    self._pan_pending = [0, 0]
-                    self._last_pan_dispatch = time.monotonic()
+                    self._pan_tile = tile
+                    self._pan_origin = pos
+                    self._pan_center = (tile.zoom.cx, tile.zoom.cy)
+                    self._pan_target = self._pan_center
                     self._pan_timer.stop()
-                    log.debug('Native pan start tile=%s', tile.index)
+                    log.debug('Native pan start tile=%s center=%s', tile.index, self._pan_center)
                     return True
             elif message == WM_MOUSEMOVE and self._pan_tile is not None:
-                if self._pan_tile not in self.grid.tiles or not self._pan_tile.isVisible():
-                    self._pan_timer.stop()
-                    self._pan_tile, self._pan_last = None, None
+                tile = self._pan_tile
+                if tile not in self.grid.tiles or not tile.isVisible() or tile.zoom.factor <= 1:
+                    self._clear_pan()
                     return False
-                dx = pos.x() - self._pan_last.x()
-                dy = pos.y() - self._pan_last.y()
-                self._pan_last = pos
-                self._pan_pending[0] += dx
-                self._pan_pending[1] += dy
+                # Absolute drag position relative to a fixed anchor, not summed
+                # deltas. Native VLC crop updates can cause synthetic/jittery
+                # mouse motion, and summing that motion makes the crop oscillate.
+                dx = pos.x() - self._pan_origin.x()
+                dy = pos.y() - self._pan_origin.y()
+                factor = tile.zoom.factor
+                margin = 0.5 / factor
+                # Fraction of the *visible image*: full tile drag moves one
+                # viewport, independent of the original source resolution.
+                cx = self._pan_center[0] - dx / (max(1, tile.video.width()) * factor)
+                cy = self._pan_center[1] - dy / (max(1, tile.video.height()) * factor)
+                cx = max(margin, min(1 - margin, cx))
+                cy = max(margin, min(1 - margin, cy))
+                self._pan_target = (cx, cy)
                 if not self._pan_timer.isActive():
                     self._pan_timer.start()
                 return True
             elif message == WM_MBUTTONUP and self._pan_tile is not None:
                 self._pan_timer.stop()
-                # Apply the final drag position outside the low-level hook.
-                self._queue_pan(self._pan_tile, *self._pan_pending)
-                self._pan_pending = [0, 0]
-                self._pan_tile, self._pan_last = None, None
+                self._flush_pan()
+                self._clear_pan()
                 log.debug('Native pan ended')
                 return True
             return False
 
-        def _queue_pan(self, tile, dx, dy):
-            if tile not in self.grid.tiles or not tile.isVisible() or tile.zoom.factor <= 1:
-                return
-            if not (dx or dy):
-                return
-            # No backend commands inside a WH_MOUSE_LL callback: let Windows
-            # finish processing input first, then update VLC on the Qt loop.
-            QTimer.singleShot(0, lambda t=tile, x=dx, y=dy: self._apply_pan(t, x, y))
-
-        def _apply_pan(self, tile, dx, dy):
-            if tile not in self.grid.tiles or not tile.isVisible() or tile.zoom.factor <= 1:
-                return
-            tile.pan_by(-dx / max(1, tile.video.width()),
-                        -dy / max(1, tile.video.height()))
-
         def _flush_pan(self):
-            if self._pan_tile is None:
+            tile, target = self._pan_tile, self._pan_target
+            if tile is None or target is None or tile not in self.grid.tiles or not tile.isVisible():
                 return
-            dx, dy = self._pan_pending
-            self._pan_pending = [0, 0]
-            self._last_pan_dispatch = time.monotonic()
-            self._queue_pan(self._pan_tile, dx, dy)
+            if abs(tile.zoom.cx - target[0]) < 0.0005 and abs(tile.zoom.cy - target[1]) < 0.0005:
+                return
+            # Apply outside low-level Windows hook, on Qt's event loop.
+            QTimer.singleShot(0, lambda t=tile, c=target: self._apply_pan(t, c))
+
+        def _apply_pan(self, tile, target):
+            if tile not in self.grid.tiles or not tile.isVisible() or tile.zoom.factor <= 1:
+                return
+            if abs(tile.zoom.cx - target[0]) < 0.0005 and abs(tile.zoom.cy - target[1]) < 0.0005:
+                return
+            tile.zoom.cx, tile.zoom.cy = target
+            tile.zoom._clamp()
+            tile._update_zoom()
 
         def _callback(self, code, wparam, lparam):
             if code >= 0 and wparam in (WM_MOUSEWHEEL, WM_MBUTTONDOWN, WM_MOUSEMOVE, WM_MBUTTONUP):

@@ -259,3 +259,12 @@ RelayView now hosts each libVLC media player in a separate child process. The ma
 - Coalesces pan movement at 100ms intervals (rather than 30Hz) and sends final movement after release.
 - Zoom wheel and button controls, drag-to-swap, playback supervision and CI workflow remain unchanged.
 - Windows native-video behaviour requires real-world testing.
+
+### v0.4.6 — Pan anchor fix
+
+- Reworked middle-button drag to use a fixed pointer anchor and original crop centre.
+- Crop centre no longer accumulates and undoes tiny oscillating mouse deltas.
+- Skip unchanged zoom messages and deduplicate native VLC crop updates.
+- Existing wheel zoom and tile swapping remain unchanged.
+
+Windows native video handling must be checked on a real installation.

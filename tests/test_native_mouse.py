@@ -23,4 +23,7 @@ def test_pan_is_deferred_outside_native_hook():
     source = (Path(__file__).parents[1] / 'relayview' / 'windows_mouse_bridge.py').read_text()
     assert 'QTimer.singleShot(0, lambda' in source
     assert 'self._pan_timer.setInterval(100)' in source
-    assert 'self._queue_pan(self._pan_tile, *self._pan_pending)' in source
+    assert 'self._pan_origin = pos' in source
+    assert 'self._pan_center = (tile.zoom.cx, tile.zoom.cy)' in source
+    assert 'dx = pos.x() - self._pan_origin.x()' in source
+    assert 'self._pan_target = (cx, cy)' in source

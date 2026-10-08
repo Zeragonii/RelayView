@@ -193,6 +193,8 @@ class GridTile(QFrame):
         if self.stream:
             previous = self.zoom.factor
             self.zoom.change(steps)
+            if self.zoom.factor == previous:
+                return
             log.info("Tile zoom input tile=%s old=%.2f new=%.2f source=control", self.index, previous, self.zoom.factor)
             self._update_zoom()
 
