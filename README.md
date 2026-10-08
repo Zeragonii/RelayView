@@ -1,3 +1,10 @@
+### v0.4.3 — fix unclickable zoom controls
+
+- Correct Qt footer mouse-event transparency that prevented the + and - buttons from receiving clicks.
+- Add logs for UI zoom input and backend dispatch.
+- Native VLC video surfaces may still intercept wheel events on Windows; footer buttons provide the dependable interaction path.
+- No change to player process isolation or grid swapping.
+
 ### v0.4.2 — digital zoom compatibility fix
 
 - Corrected crop geometry coordinates for offset crops in libVLC 3.x.

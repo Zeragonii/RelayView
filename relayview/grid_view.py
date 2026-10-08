@@ -143,7 +143,8 @@ class GridTile(QFrame):
         layout.addWidget(self.video, 1)
 
         footer = QFrame(objectName="gridTileFooter")
-        footer.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        # Footer must receive mouse events: Qt otherwise disables its +/- buttons.
+        footer.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         footer_l = QHBoxLayout(footer)
         footer_l.setContentsMargins(9, 5, 9, 5)
         footer_l.setSpacing(6)
@@ -189,7 +190,9 @@ class GridTile(QFrame):
 
     def zoom_by(self, steps: int) -> None:
         if self.stream:
+            previous = self.zoom.factor
             self.zoom.change(steps)
+            log.info("Tile zoom input tile=%s old=%.2f new=%.2f source=control", self.index, previous, self.zoom.factor)
             self._update_zoom()
 
     def reset_zoom(self) -> None:
@@ -358,6 +361,7 @@ class GridView(QWidget):
     def _update_tile_zoom(self, index: int) -> None:
         if 0 <= index < len(self.tiles):
             tile = self.tiles[index]
+            log.debug("Tile zoom dispatch tile=%s factor=%.2f has_player=%s", index, tile.zoom.factor, bool(tile.player))
             if tile.player:
                 tile.player.set_zoom(tile.zoom.factor, tile.zoom.cx, tile.zoom.cy)
 
