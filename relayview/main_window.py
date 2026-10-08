@@ -30,7 +30,7 @@ from .grid_view import GridSizeDialog, GridView
 from .playlist import load_m3u
 from .playlist_editor import PlaylistEditorDialog
 from .vlc_backend import VLCBackend
-from .updater import UpdateCheckThread, UpdateDownloadThread
+from .updater import UpdateCheckThread, UpdateDownloadThread, handoff_update_and_restart
 from . import __version__
 from .diagnostics import diagnostic_summary
 from .logging_config import current_log_path, get_log_level, get_logger, log_dir, set_log_level
@@ -385,6 +385,7 @@ class MainWindow(QMainWindow):
             grid_rows=self.grid_view.rows,
             grid_columns=self.grid_view.columns,
             active_grid_feeds=sum(1 for stream in self.grid_view.stream_assignments() if stream),
+            player_details=[self.backend.primary.diagnostics()] + [pl.diagnostics() for pl in self.backend._extra_players] if self.backend else [],
         )
         QApplication.clipboard().setText(summary)
         log.info("Diagnostic summary copied log=%s", current_log_path())
@@ -789,17 +790,15 @@ class MainWindow(QMainWindow):
                 self,
                 "Update downloaded",
                 "The update has been downloaded successfully.\n\n"
-                "Close RelayView now, then launch it again to install the update?",
+                "Install the update and automatically reopen RelayView?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes,
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return
 
-            # Do not invoke Velopack's apply API from inside the live Qt/libVLC
-            # process. Velopack already auto-applies a downloaded newer package
-            # at the very start of the next launch (before Qt is initialised).
-            # Closing cleanly here avoids native shutdown/update races.
+            # Velopack's external updater waits for this process to exit, then
+            # applies the package and relaunches the installed application.
             self.settings.setValue("geometry", self.saveGeometry())
             self._save_grid_state()
             self.settings.sync()
@@ -808,8 +807,15 @@ class MainWindow(QMainWindow):
                 self.backend.shutdown()
                 log.info("Backend shutdown returned before update-close handoff")
 
-            self.status_text.setText("Update ready — closing RelayView…")
-            log.warning("Closing RelayView with downloaded update pending")
+            try:
+                handoff_update_and_restart()
+            except Exception as exc:
+                log.exception("Unable to launch external updater")
+                QMessageBox.warning(self, "Update installation failed", str(exc) + "\n\nRelayView will remain open.")
+                self.status_text.setText("Update ready — install failed")
+                return
+            self.status_text.setText("Installing update — RelayView will reopen…")
+            log.warning("Exiting for Velopack update and automatic restart")
             QTimer.singleShot(0, QApplication.instance().quit)
 
         thread.downloaded.connect(finished)

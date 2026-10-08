@@ -26,7 +26,7 @@ def enable_crash_logging() -> Path | None:
         return None
 
 
-def diagnostic_summary(*, version: str, playlist_name: str, view_mode: str, grid_rows: int, grid_columns: int, active_grid_feeds: int) -> str:
+def diagnostic_summary(*, version: str, playlist_name: str, view_mode: str, grid_rows: int, grid_columns: int, active_grid_feeds: int, player_details: list[dict] | None = None) -> str:
     return "\n".join([
         f"RelayView version: {version}",
         f"Log level: {get_log_level()}",
@@ -37,4 +37,7 @@ def diagnostic_summary(*, version: str, playlist_name: str, view_mode: str, grid
         f"View mode: {view_mode}",
         f"Grid: {grid_rows}x{grid_columns} ({active_grid_feeds} assigned)",
         f"Playlist: {playlist_name or '<none>'}",
+    ] + [
+        f"Player {index}: " + ", ".join(f"{key}={value}" for key, value in item.items())
+        for index, item in enumerate(player_details or [], start=1)
     ])

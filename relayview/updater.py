@@ -64,3 +64,20 @@ class UpdateDownloadThread(QThread):
         except Exception as exc:  # pragma: no cover - network/platform specific
             log.exception("Update download failed")
             self.downloaded.emit(False, str(exc))
+
+
+def handoff_update_and_restart() -> None:
+    """Spawn Velopack's external updater, wait for our exit, then relaunch.
+
+    Must be called on the main GUI thread after state is saved. The process
+    must quit promptly after this call (Velopack waits up to 60 seconds).
+    """
+    if not REPOSITORY_URL:
+        raise RuntimeError("Update source is not configured for this build")
+    import velopack
+    manager = velopack.UpdateManager(REPOSITORY_URL)
+    pending = manager.get_update_pending_restart()
+    if pending is None:
+        raise RuntimeError("No downloaded update is pending installation")
+    manager.wait_exit_then_apply_updates(pending, silent=False, restart=True)
+    log.info("External Velopack updater launched; application will exit")

@@ -64,6 +64,11 @@ class VLCPlayer:
         self._retry_at = 0.0
         self._failures = 0
         self._reported_state = "Idle"
+        self._last_progress = 0.0
+        self._progress_available = False
+        self._last_frame_count = -1
+        self._last_play_time = -1
+        self._last_exit_code = None
         self._enabled = False
         log.debug("Created isolated VLCPlayer proxy id=%s", id(self))
 
@@ -95,6 +100,10 @@ class VLCPlayer:
         self._starting_at = time.monotonic()
         self._last_event = self._starting_at
         self._reported_state = "Connecting"
+        self._last_progress = self._starting_at
+        self._progress_available = False
+        self._last_frame_count = -1
+        self._last_play_time = -1
         threading.Thread(target=self._read_events, args=(self._process, generation),
                          name=f"VLC-events-{self._process.pid}", daemon=True).start()
         log.info("Playback worker started proxy=%s pid=%s", id(self), self._process.pid)
@@ -229,12 +238,29 @@ class VLCPlayer:
             if kind == "state":
                 state = str(event.get("value", "Unknown"))
                 if state in ("Playing", "Paused", "Buffering", "Opening"):
+                    was_playing = self._reported_state == "Playing"
                     self._announce(state)
                     if state == "Playing":
                         self._failures = 0
+                        if not was_playing:
+                            self._last_progress = timestamp
                 elif state == "Error":
                     self._schedule_retry("Playback error")
                     break
+            elif kind == "progress":
+                # Count only positive evidence of frame advancement. Audio-only streams
+                # and decoders without video statistics must not false-trigger recovery.
+                try:
+                    frames = int(event.get("frames", -1))
+                    if frames >= 0:
+                        if self._last_frame_count >= 0 and frames > self._last_frame_count:
+                            self._last_progress = timestamp
+                        elif self._last_frame_count < 0:
+                            self._last_progress = timestamp
+                        self._last_frame_count = frames
+                        self._progress_available = True
+                except (TypeError, ValueError):
+                    pass
             elif kind == "fatal":
                 self._schedule_retry("VLC unavailable")
                 break
@@ -245,8 +271,13 @@ class VLCPlayer:
         if proc is not None:
             code = proc.poll()
             if code is not None:
+                self._last_exit_code = code
                 log.error("Worker exited unexpectedly pid=%s exit=%s", proc.pid, code)
                 self._schedule_retry(f"Worker exited ({code})") if self._enabled else self.terminate()
+                return False
+            if (self._enabled and not self._paused and self._reported_state == "Playing"
+                    and self._progress_available and now - self._last_progress > 20.0):
+                self._schedule_retry("Video frozen")
                 return False
             if self._enabled and now - self._last_event > 10.0:
                 self._schedule_retry("Worker unresponsive")
@@ -311,6 +342,19 @@ class VLCPlayer:
         self._volume = max(0, min(100, int(volume)))
         if self._process and self._process.poll() is None:
             self._send("volume", value=self._volume)
+
+    def diagnostics(self) -> dict:
+        """Sanitised operational details safe to include in support reports."""
+        proc = self._process
+        return {
+            "state": self._reported_state,
+            "worker_pid": proc.pid if proc and proc.poll() is None else None,
+            "enabled": self._enabled,
+            "restarts": self._failures,
+            "last_exit_code": self._last_exit_code,
+            "frame_count": self._last_frame_count if self._progress_available else None,
+            "seconds_since_progress": round(time.monotonic() - self._last_progress, 1) if self._progress_available else None,
+        }
 
     def get_volume(self) -> int:
         return self._volume
@@ -392,6 +436,19 @@ class VLCBackend:
         self.primary.set_volume(volume)
         for player in self._extra_players:
             player.set_volume(volume)
+
+    def diagnostics(self) -> dict:
+        """Sanitised operational details safe to include in support reports."""
+        proc = self._process
+        return {
+            "state": self._reported_state,
+            "worker_pid": proc.pid if proc and proc.poll() is None else None,
+            "enabled": self._enabled,
+            "restarts": self._failures,
+            "last_exit_code": self._last_exit_code,
+            "frame_count": self._last_frame_count if self._progress_available else None,
+            "seconds_since_progress": round(time.monotonic() - self._last_progress, 1) if self._progress_available else None,
+        }
 
     def get_volume(self) -> int:
         return self.primary.get_volume()

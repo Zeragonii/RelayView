@@ -46,10 +46,24 @@ def _emit(event: str, **fields) -> None:
 def _report_player(player, stop_event: threading.Event) -> None:
     """Report native VLC state from within the isolated worker process."""
     last_state = None
+    last_frames = -1
     while not stop_event.wait(1.0):
         try:
             state = str(player.get_state()).split(".")[-1]
             _emit("heartbeat", state=state)
+            # libVLC video decoder statistics are unavailable for some streams.
+            # Never invent frame progress when the decoder does not expose it.
+            if state == "Playing":
+                try:
+                    media = player.get_media()
+                    stats_result = media.get_stats() if media else None
+                    stats = stats_result[1] if isinstance(stats_result, tuple) and len(stats_result) == 2 and stats_result[0] else None
+                    frames = getattr(stats, "displayed_pictures", None) if stats is not None else None
+                    if frames is not None and int(frames) >= 0 and int(frames) != last_frames:
+                        last_frames = int(frames)
+                        _emit("progress", frames=last_frames)
+                except (AttributeError, TypeError, ValueError):
+                    pass
             if state != last_state:
                 _emit("state", value=state)
                 last_state = state

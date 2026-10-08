@@ -1,5 +1,11 @@
 # RelayView
 
+### v0.3.1 — playback stall detection, diagnostics & update restart
+
+- Playback workers report displayed-video-frame counters when exposed by libVLC; the supervisor retries if reported frames remain unchanged for more than 20 seconds while playing. Unsupported stats do not trigger false positives.
+- Copied diagnostics now include sanitised process state, active worker PID, retry count, last exit code and frame-progress age.
+- The downloaded-update confirmation now hands off to Velopack's external updater (`wait_exit_then_apply_updates`) for install-and-restart after the GUI shuts down, instead of requiring a manual Start-menu launch. Only supported in installed Velopack builds; must be validated on Windows.
+
 ### v0.3.0 — playback supervision (source release)
 
 - **Bidirectional child-worker protocol:** JSON-lines on stdin/stdout. Workers send `ready`, `state`, `heartbeat`, `fatal` and `command_error` events. stdout has a dedicated reader thread, and Qt callbacks execute on the existing UI watchdog timer.

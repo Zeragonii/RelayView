@@ -50,6 +50,11 @@ def make_player():
     player._retry_at = 0.0
     player._failures = 0
     player._reported_state = "Playing"
+    player._last_progress = time.monotonic()
+    player._progress_available = False
+    player._last_frame_count = -1
+    player._last_play_time = -1
+    player._last_exit_code = None
     player._enabled = True
     return player
 
@@ -139,3 +144,39 @@ def test_manual_stop_disables_reconnection():
     wrapper.stop()
     assert wrapper._enabled is False
     assert wrapper.check_health() is True
+
+
+def test_stalled_video_is_restarted():
+    wrapper = make_player()
+    wrapper._progress_available = True
+    wrapper._last_frame_count = 42
+    wrapper._last_progress = time.monotonic() - 25
+    messages = []
+    wrapper._status_callback = messages.append
+    assert wrapper.check_health() is False
+    assert messages == ["Video frozen — retry in 1s"]
+
+
+def test_no_video_stats_does_not_false_trigger_stall():
+    wrapper = make_player()
+    wrapper._progress_available = False
+    wrapper._last_progress = time.monotonic() - 120
+    assert wrapper.check_health() is True
+
+
+def test_paused_video_does_not_trigger_stall():
+    wrapper = make_player()
+    wrapper._paused = True
+    wrapper._progress_available = True
+    wrapper._last_progress = time.monotonic() - 120
+    assert wrapper.check_health() is True
+
+
+def test_frame_progress_refreshes_stall_timer():
+    wrapper = make_player()
+    wrapper._progress_available = True
+    wrapper._last_frame_count = 10
+    wrapper._last_progress = time.monotonic() - 40
+    wrapper._events.append((wrapper._generation, {"event": "progress", "frames": 11}, time.monotonic()))
+    assert wrapper.check_health() is True
+    assert wrapper._last_frame_count == 11
