@@ -14,7 +14,7 @@ def test_bridge_connected_to_grid_and_scoped_to_video():
     source = (root / 'grid_view.py').read_text()
     mouse = (root / 'windows_mouse_bridge.py').read_text()
     assert 'self._native_mouse = WindowsMouseBridge(self)' in source
-    assert 'tile.video.rect().contains(local)' in mouse
+    assert 'tile.video_viewport.rect().contains(local)' in mouse
     assert 'WM_MOUSEWHEEL' in mouse and 'WM_MBUTTONDOWN' in mouse
     assert 'app.aboutToQuit.connect(self.close)' in mouse
 
@@ -22,7 +22,7 @@ def test_bridge_connected_to_grid_and_scoped_to_video():
 def test_pan_is_deferred_outside_native_hook():
     source = (Path(__file__).parents[1] / 'relayview' / 'windows_mouse_bridge.py').read_text()
     assert 'QTimer.singleShot(0, lambda' in source
-    assert 'self._pan_timer.setInterval(100)' in source
+    assert 'self._pan_timer.setInterval(33)' in source
     assert 'self._pan_origin = pos' in source
     assert 'self._pan_center = (tile.zoom.cx, tile.zoom.cy)' in source
     assert 'dx = pos.x() - self._pan_origin.x()' in source

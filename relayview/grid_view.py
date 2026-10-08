@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .zoom import ZoomState
+from .zoom import ZoomState, viewport_geometry
 from .windows_mouse_bridge import WindowsMouseBridge
 from .models import Stream
 from .vlc_backend import VLCBackend, VLCPlayer
@@ -136,12 +136,21 @@ class GridTile(QFrame):
         layout.setContentsMargins(1, 1, 1, 1)
         layout.setSpacing(0)
 
-        self.video = QFrame(objectName="gridVideo")
+        # The viewport stays fixed in the grid layout. A larger, movable native
+        # child hosts VLC. Windows clips child HWNDs to their native parent, so
+        # panning never changes VLC's crop or decoder settings.
+        self.video_viewport = QFrame(objectName="gridVideoViewport")
+        self.video_viewport.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+        self.video_viewport.setMinimumSize(60, 40)
+        self.video_viewport.installEventFilter(self)
+        layout.addWidget(self.video_viewport, 1)
+
+        self.video = QFrame(self.video_viewport, objectName="gridVideo")
         self.video.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
         self.video.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.video.setMinimumSize(60, 40)
-        self.video.installEventFilter(self)
-        layout.addWidget(self.video, 1)
+        # Not managed by a layout: resize/move independently inside the viewport.
+        self.video.setGeometry(0, 0, 60, 40)
+        self.video.show()
 
         footer = QFrame(objectName="gridTileFooter")
         # Footer must receive mouse events: Qt otherwise disables its +/- buttons.
@@ -185,8 +194,23 @@ class GridTile(QFrame):
         self.zoom.reset()
         self._update_zoom()
 
+    def _apply_zoom_geometry(self) -> None:
+        # An initial viewport resize can arrive while its child is being built.
+        if not hasattr(self, "video"):
+            return
+        rect = viewport_geometry(self.zoom, self.video_viewport.width(), self.video_viewport.height())
+        left, top, width, height = rect
+        # During panning, only move the HWND; never resize/reinitialise VLC's
+        # video output on each mouse-move. Resizing happens when zoom changes
+        # or the tile is resized by the grid.
+        if self.video.width() != width or self.video.height() != height:
+            self.video.resize(width, height)
+        if self.video.x() != left or self.video.y() != top:
+            self.video.move(left, top)
+
     def _update_zoom(self) -> None:
         self.zoom_label.setText(f"{self.zoom.factor:g}×" if self.zoom.factor > 1 else "")
+        self._apply_zoom_geometry()
         self.zoom_changed.emit(self.index)
 
     def zoom_by(self, steps: int) -> None:
@@ -208,7 +232,9 @@ class GridTile(QFrame):
             self._update_zoom()
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
-        if obj is self.video and event.type() == QEvent.Type.Wheel and not sys.platform.startswith("win"):
+        if obj is self.video_viewport and event.type() == QEvent.Type.Resize:
+            self._apply_zoom_geometry()
+        if obj in (self.video, self.video_viewport) and event.type() == QEvent.Type.Wheel and not sys.platform.startswith("win"):
             self.zoom_by(1 if event.angleDelta().y() > 0 else -1)
             return True
         return super().eventFilter(obj, event)
@@ -243,7 +269,7 @@ class GridTile(QFrame):
             pos = event.position().toPoint()
             delta = pos - self._pan_start
             self._pan_start = pos
-            self.pan_by(-delta.x() / max(1, self.video.width()), -delta.y() / max(1, self.video.height()))
+            self.pan_by(-delta.x() / max(1, self.video_viewport.width()), -delta.y() / max(1, self.video_viewport.height()))
             event.accept()
             return
         if not (event.buttons() & Qt.MouseButton.LeftButton):
@@ -365,9 +391,8 @@ class GridView(QWidget):
     def _update_tile_zoom(self, index: int) -> None:
         if 0 <= index < len(self.tiles):
             tile = self.tiles[index]
-            log.debug("Tile zoom dispatch tile=%s factor=%.2f has_player=%s", index, tile.zoom.factor, bool(tile.player))
-            if tile.player:
-                tile.player.set_zoom(tile.zoom.factor, tile.zoom.cx, tile.zoom.cy)
+            log.debug("Viewport zoom tile=%s factor=%.2f center=(%.3f, %.3f) geometry=%s",
+                      index, tile.zoom.factor, tile.zoom.cx, tile.zoom.cy, tile.video.geometry())
 
     def _ensure_player(self, tile: GridTile) -> VLCPlayer | None:
         if not self.backend:
@@ -383,7 +408,6 @@ class GridView(QWidget):
             tile.player = self.backend.create_player(update_tile_health)
             tile.player.set_volume(self._volume)
             tile.player.set_muted(self._muted)
-        tile.player.set_zoom(tile.zoom.factor, tile.zoom.cx, tile.zoom.cy)
         return tile.player
 
     def _start_assigned_players(self, generation: int | None = None) -> None:
@@ -407,6 +431,10 @@ class GridView(QWidget):
             return
         # winId() is requested only after the tile is visible and the event loop has
         # had a chance to create a stable native HWND. Attach exactly once per start.
+        # Make both HWNDs native before passing the inner HWND to VLC. The
+        # outer one is the clipping boundary, independent of video size.
+        _prepare_windows_video_host(tile.video_viewport)
+        tile._apply_zoom_geometry()
         hwnd = _prepare_windows_video_host(tile.video)
         log.info("Starting grid tile=%s player=%s hwnd=%s stream=%s", tile.index, id(player), hwnd, redact_url(tile.stream.url))
         if (getattr(player, "_current_url", None) == tile.stream.url
@@ -448,6 +476,8 @@ class GridView(QWidget):
         if self.isVisible():
             player = self._ensure_player(tile)
             if player:
+                _prepare_windows_video_host(tile.video_viewport)
+                tile._apply_zoom_geometry()
                 player.attach_video(_prepare_windows_video_host(tile.video))
                 player.play(stream.url)
                 player.set_volume(self._volume)

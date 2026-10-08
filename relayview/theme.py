@@ -127,7 +127,7 @@ QFrame#gridTile {
 QFrame#gridTile[active="true"] {
     border: 2px solid #4c7dff;
 }
-QFrame#gridVideo { background: #020304; border: none; }
+QFrame#gridVideoViewport, QFrame#gridVideo { background: #020304; border: none; }
 QFrame#gridTileFooter {
     background: #10151e;
     border: none;

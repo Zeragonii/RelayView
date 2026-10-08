@@ -1,3 +1,29 @@
+### v0.4.7 — Native viewport pan and zoom (Windows)
+
+**Change of approach:** VLC's `video_set_crop_geometry()` proved unreliable for
+panning on Windows, repeatedly jumping the video back towards its centre.
+RelayView now zooms the **Qt-hosted video window**, not VLC's decoded image.
+
+- Every grid camera gets a fixed, native clipping viewport; its original
+  libVLC HWND is a separately sized and positioned child of that viewport.
+- Zoom enlarges the video child; middle-drag moves that child within the
+  viewport. VLC receives **no dynamic crop or zoom commands** during either.
+- This preserves one worker per camera, existing mouse-wheel and footer
+  controls, drag-to-swap, saved layouts and the build/update pipeline.
+- On grid/tile resize, the enlarged child is recalculated without restarting
+  streams. Native mouse hit testing uses the *viewport* boundary, not the
+  enlarged and displaced child.
+- The Windows middle-drag refresh is ~30Hz; actual pan only changes the child
+  window position, not its size or the VLC output's crop.
+
+**Windows testing required:** Native child-window clipping across Qt and the
+out-of-process libVLC video output cannot be demonstrated by Python unit tests
+in this Linux environment. Test a single camera at 2–3×, move with the middle
+button, then swap tiles and resize the main window. If VLC's own child windows
+override the Qt host clipping, we will need a Windows-specific HWND adjustment.
+
+---
+
 ### v0.4.3 — fix unclickable zoom controls
 
 - Correct Qt footer mouse-event transparency that prevented the + and - buttons from receiving clicks.
@@ -249,7 +275,7 @@ RelayView now hosts each libVLC media player in a separate child process. The ma
 
 - Mouse-wheel zoom and middle-button drag-to-pan over camera images, including VLC-owned native child windows, using a scoped Windows low-level mouse hook.
 - Only processes input within an assigned, visible camera video rectangle while RelayView is foreground.
-- The existing +/− buttons, drag-to-swap and crop-based zoom are unchanged.
+- The existing +/− buttons and drag-to-swap are unchanged; crop-based zoom was replaced with viewport zoom in v0.4.7.
 - The Windows hook is removed at application shutdown; if installation fails, the footer controls continue to work.
 
 

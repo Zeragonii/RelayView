@@ -70,7 +70,6 @@ class VLCPlayer:
         self._last_play_time = -1
         self._last_exit_code = None
         self._enabled = False
-        self._zoom = (1.0, 0.5, 0.5)
         log.debug("Created isolated VLCPlayer proxy id=%s", id(self))
 
     @property
@@ -159,17 +158,6 @@ class VLCPlayer:
                 log.exception("Worker command failed proxy=%s pid=%s command=%s", id(self), proc.pid, command)
                 return False
 
-    def set_zoom(self, factor: float, cx: float = 0.5, cy: float = 0.5) -> None:
-        self._zoom = (factor, cx, cy)
-        log.info("Zoom requested proxy=%s factor=%.2f center=(%.3f, %.3f)", id(self), factor, cx, cy)
-        if self._process and self._process.poll() is None:
-            self._send("zoom", factor=factor, cx=cx, cy=cy)
-
-    def _restore_zoom(self) -> None:
-        factor, cx, cy = getattr(self, "_zoom", (1.0, 0.5, 0.5))
-        if factor != 1.0:
-            self._send("zoom", factor=factor, cx=cx, cy=cy)
-
     def attach_video(self, widget_id: int) -> None:
         widget_id = int(widget_id)
         self._attached_handle = widget_id
@@ -195,7 +183,6 @@ class VLCPlayer:
         self._send("mute", value=self._muted)
         log.info("Play isolated player=%s url=%s", id(self), redact_url(url))
         self._send("play", url=url)
-        self._restore_zoom()
         self._announce("Connecting…")
 
     def toggle_pause(self) -> bool:
@@ -277,10 +264,6 @@ class VLCPlayer:
             elif kind == "fatal":
                 self._schedule_retry("VLC unavailable")
                 break
-            elif kind == "zoom_status":
-                log.info("Zoom worker pid=%s status=%s factor=%s crop=%s dimensions=%sx%s detail=%s",
-                         getattr(self._process, "pid", None), event.get("status"), event.get("factor"),
-                         event.get("crop"), event.get("width"), event.get("height"), event.get("detail"))
             elif kind == "command_error":
                 log.warning("Worker rejected command=%s", event.get("command"))
 
@@ -308,7 +291,6 @@ class VLCPlayer:
                 self._send("volume", value=self._volume)
                 self._send("mute", value=self._muted)
                 self._send("play", url=self._current_url)
-                self._restore_zoom()
                 if self._paused:
                     self._send("pause", value=True)
                 self._announce("Reconnecting…")
