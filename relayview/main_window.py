@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 from PySide6.QtCore import QEvent, QSettings, Qt, QTimer, Signal, QUrl
 from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QIcon, QKeySequence, QShortcut
@@ -11,6 +12,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QInputDialog,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -26,7 +28,8 @@ from PySide6.QtWidgets import (
 )
 
 from .models import Stream
-from .grid_view import GridSizeDialog, GridView
+from .grid_view import GridSizeDialog, GridView, MAX_GRID_TILES
+from .grid_profiles import validate_profile, resolve_assignments
 from .playlist import load_m3u
 from .playlist_editor import PlaylistEditorDialog
 from .vlc_backend import VLCBackend
@@ -327,6 +330,20 @@ class MainWindow(QMainWindow):
         grid_action = QAction("Configure grid…", self)
         grid_action.triggered.connect(self.configure_grid_dialog)
         menu.addAction(grid_action)
+        layouts_menu = menu.addMenu("Saved camera layouts")
+        save_layout = QAction("Save current layout…", self)
+        save_layout.triggered.connect(self.save_named_layout)
+        layouts_menu.addAction(save_layout)
+        delete_layout = layouts_menu.addMenu("Delete layout")
+        profiles = self._named_layouts()
+        if not profiles:
+            empty = layouts_menu.addAction("No saved layouts")
+            empty.setEnabled(False)
+        for name in sorted(profiles, key=str.casefold):
+            action = layouts_menu.addAction(name)
+            action.triggered.connect(lambda checked=False, selected=name: self.load_named_layout(selected))
+            remove = delete_layout.addAction(name)
+            remove.triggered.connect(lambda checked=False, selected=name: self.delete_named_layout(selected))
         menu.addSeparator()
 
         logging_menu = menu.addMenu("Logging")
@@ -549,6 +566,52 @@ class MainWindow(QMainWindow):
         self.status_text.setText(status)
         self.status_badge.setText(status.replace("…", ""))
 
+    def _named_layouts(self) -> dict:
+        """Read profiles defensively; existing unnamed grid settings remain intact."""
+        try:
+            profiles = json.loads(self.settings.value("named_grid_layouts", "{}"))
+            return profiles if isinstance(profiles, dict) else {}
+        except (ValueError, TypeError):
+            log.warning("Ignoring invalid named layout settings")
+            return {}
+
+    def save_named_layout(self) -> None:
+        name, accepted = QInputDialog.getText(self, "Save camera layout", "Layout name:")
+        name = name.strip()
+        if not accepted or not name:
+            return
+        profiles = self._named_layouts()
+        if name in profiles and QMessageBox.question(self, "Replace layout?", f"Replace saved layout '{name}'?") != QMessageBox.StandardButton.Yes:
+            return
+        profiles[name] = {"rows": self.grid_view.rows, "columns": self.grid_view.columns,
+                          "urls": self.grid_view.urls()}
+        self.settings.setValue("named_grid_layouts", json.dumps(profiles))
+        self.status_text.setText(f"Saved layout: {name}")
+
+    def load_named_layout(self, name: str) -> None:
+        profile = self._named_layouts().get(name)
+        if not isinstance(profile, dict):
+            return
+        try:
+            rows, columns, urls = validate_profile(profile)
+        except ValueError:
+            QMessageBox.warning(self, "Invalid layout", "The saved layout is invalid or exceeds the grid limit.")
+            return
+        assignments = resolve_assignments(urls, rows, columns, self.streams)
+        # Switching from single-view must release the primary HWND first.
+        if self._view_mode == "single" and self.backend:
+            self.backend.quiesce_primary()
+        self.grid_view.configure(rows, columns, assignments)
+        self.activate_grid()
+        self.status_text.setText(f"Layout: {name}")
+
+    def delete_named_layout(self, name: str) -> None:
+        if QMessageBox.question(self, "Delete camera layout", f"Delete saved layout '{name}'?") != QMessageBox.StandardButton.Yes:
+            return
+        profiles = self._named_layouts()
+        profiles.pop(name, None)
+        self.settings.setValue("named_grid_layouts", json.dumps(profiles))
+
     def configure_grid_dialog(self) -> None:
         log.info("Opening grid configuration current=%sx%s", self.grid_view.rows, self.grid_view.columns)
         dialog = GridSizeDialog(self.grid_view.rows, self.grid_view.columns, self)
@@ -560,6 +623,9 @@ class MainWindow(QMainWindow):
 
     def activate_grid(self, rows: int | None = None, columns: int | None = None, reconfigure: bool = False) -> None:
         log.info("activate_grid begin rows=%s columns=%s reconfigure=%s view_mode=%s", rows, columns, reconfigure, self._view_mode)
+        if rows is not None and columns is not None and (rows < 1 or columns < 1 or rows * columns > MAX_GRID_TILES):
+            QMessageBox.warning(self, "Grid too large", f"A grid can contain at most {MAX_GRID_TILES} tiles.")
+            return
 
         # The single player must be detached and fully stopped while its QWidget/HWND
         # is still alive. Only after VLC has returned from stop() do we rebuild/show
@@ -669,6 +735,8 @@ class MainWindow(QMainWindow):
             return
         rows = max(1, self.settings.value("grid_rows", 2, type=int))
         columns = max(1, self.settings.value("grid_columns", 2, type=int))
+        if rows * columns > MAX_GRID_TILES:
+            rows, columns = 2, 2
         raw_urls = self.settings.value("grid_urls", [])
         if isinstance(raw_urls, str):
             urls = [raw_urls] if raw_urls else []

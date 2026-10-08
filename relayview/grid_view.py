@@ -24,6 +24,7 @@ from .logging_config import get_logger, redact_url
 log = get_logger("grid")
 
 GRID_MIME = "application/x-relayview-grid-tile"
+MAX_GRID_TILES = 64  # A practical guardrail against accidentally launching hundreds of VLC processes.
 
 
 def _prepare_windows_video_host(widget: QWidget) -> int:
@@ -101,7 +102,8 @@ class GridSizeDialog(QDialog):
 
     def _update_preview(self) -> None:
         cells = self.rows.value() * self.columns.value()
-        self.preview.setText(f"{self.rows.value()} × {self.columns.value()} · {cells} camera tiles")
+        self.preview.setText(f"{self.rows.value()} × {self.columns.value()} · {cells} camera tiles" + (f" (maximum {MAX_GRID_TILES})" if cells > MAX_GRID_TILES else ""))
+        self.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Ok).setEnabled(cells <= MAX_GRID_TILES)
 
     def dimensions(self) -> tuple[int, int]:
         return self.rows.value(), self.columns.value()
@@ -220,6 +222,20 @@ class GridView(QWidget):
     def configure(self, rows: int, columns: int, streams: list[Stream | None]) -> None:
         rows = max(1, int(rows))
         columns = max(1, int(columns))
+        if rows * columns > MAX_GRID_TILES:
+            raise ValueError(f"Grid exceeds the {MAX_GRID_TILES}-tile safety limit")
+        if self.tiles and rows == self.rows and columns == self.columns:
+            # Preserve native HWNDs and the VLC processes when only assignments change.
+            if streams is not None:
+                changed = False
+                for index, tile in enumerate(self.tiles):
+                    replacement = streams[index] if index < len(streams) else None
+                    if (tile.stream.url if tile.stream else None) != (replacement.url if replacement else None):
+                        self.assign_stream(index, replacement)
+                        changed = True
+                if changed:
+                    self.assignments_changed.emit()
+            return
         log.info("Grid configure requested rows=%s columns=%s incoming_assignments=%s current_tiles=%s generation=%s", rows, columns, len(streams), len(self.tiles), self._generation)
         # Invalidate any deferred startup callbacks from the previous grid.
         self._generation += 1
@@ -228,7 +244,7 @@ class GridView(QWidget):
         old_rows = self.rows
         old_columns = self.columns
         old_streams = [tile.stream for tile in self.tiles]
-        if streams:
+        if streams is not None:
             old_streams = list(streams)
 
         for tile in self.tiles:
@@ -306,6 +322,11 @@ class GridView(QWidget):
         # had a chance to create a stable native HWND. Attach exactly once per start.
         hwnd = _prepare_windows_video_host(tile.video)
         log.info("Starting grid tile=%s player=%s hwnd=%s stream=%s", tile.index, id(player), hwnd, redact_url(tile.stream.url))
+        if (getattr(player, "_current_url", None) == tile.stream.url
+                and getattr(player, "_enabled", False)):
+            # Existing supervisor owns this feed; avoid killing a healthy worker
+            # when opening the same grid or restoring an unchanged profile.
+            return
         player.attach_video(hwnd)
         player.play(tile.stream.url)
         player.set_volume(self._volume)
@@ -327,6 +348,9 @@ class GridView(QWidget):
         if not (0 <= index < len(self.tiles)):
             return
         tile = self.tiles[index]
+        if (tile.stream.url if tile.stream else None) == (stream.url if stream else None):
+            # No-op assignment must not restart a healthy worker.
+            return
         tile.set_stream_label(stream)
         if stream is None:
             if tile.player:
@@ -344,14 +368,22 @@ class GridView(QWidget):
         self.assignments_changed.emit()
 
     def swap_tiles(self, source: int, target: int) -> None:
-        if not (0 <= source < len(self.tiles) and 0 <= target < len(self.tiles)):
+        """Move the existing QWidget/video host, not the stream or VLC process.
+
+        libVLC remains attached to each tile's original HWND. Swapping assignments
+        would tear down both decoders and cause visible reconnection delays.
+        """
+        if not (0 <= source < len(self.tiles) and 0 <= target < len(self.tiles)) or source == target:
             return
-        if source == target:
-            return
-        source_stream = self.tiles[source].stream
-        target_stream = self.tiles[target].stream
-        self.assign_stream(source, target_stream)
-        self.assign_stream(target, source_stream)
+        first, second = self.tiles[source], self.tiles[target]
+        self.layout_grid.removeWidget(first)
+        self.layout_grid.removeWidget(second)
+        self.layout_grid.addWidget(first, target // self.columns, target % self.columns)
+        self.layout_grid.addWidget(second, source // self.columns, source % self.columns)
+        self.tiles[source], self.tiles[target] = second, first
+        first.index, second.index = target, source
+        first.position_label.setText(str(target + 1))
+        second.position_label.setText(str(source + 1))
         self.set_active(target)
         self.assignments_changed.emit()
 

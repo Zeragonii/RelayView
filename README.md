@@ -1,5 +1,16 @@
 # RelayView
 
+### v0.4.0 — smarter camera grids
+
+- **Saved layouts:** use the main menu → **Saved camera layouts** to save, load, or delete named camera grids; assignments use stream URLs and unknown cameras appear as empty tiles. Existing last-used grid persistence is retained.
+- **Swap without reconnecting:** dragging a populated tile to a different position moves its entire QWidget and native video host along with the running VLC process rather than destroying both playback workers.
+- **Resource protection:** grids are limited to 64 tiles; the grid dialog prevents exceeding the limit and legacy saved dimensions are clamped to 2×2.
+- **Fewer redundant restarts:** unchanged grid configurations, repeated assignments and existing supervised feeds avoid unnecessary playback restarts.
+- **CI behaviour unchanged:** the existing single optimised GitHub Actions workflow continues to build and publish RelayView.
+
+**Note:** Windows Qt/libVLC HWND behaviour should be tested with drag swaps of active 2×2 and 4×4 streams before publishing an automatic update. This version does not yet implement separate low-resolution substream mapping or decoder-aware load balancing; those require camera-specific source configuration.
+
+
 ### v0.3.1 — playback stall detection, diagnostics & update restart
 
 - Playback workers report displayed-video-frame counters when exposed by libVLC; the supervisor retries if reported frames remain unchanged for more than 20 seconds while playing. Unsupported stats do not trigger false positives.
