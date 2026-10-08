@@ -243,3 +243,11 @@ For troubleshooting, set Logging → Debug before reproducing a grid or update i
 ## Playback isolation (v0.2.2)
 
 RelayView now hosts each libVLC media player in a separate child process. The main Qt GUI no longer loads libVLC directly. Closing, switching, or rebuilding a stream terminates the corresponding worker process instead of calling `libvlc_media_player_stop()`, isolating native VLC RTSP teardown failures from the application and updater. The packaged `RelayView.exe` doubles as the hidden playback worker, so there is no second executable to install.
+
+
+### v0.4.4 — Windows native mouse controls
+
+- Mouse-wheel zoom and middle-button drag-to-pan over camera images, including VLC-owned native child windows, using a scoped Windows low-level mouse hook.
+- Only processes input within an assigned, visible camera video rectangle while RelayView is foreground.
+- The existing +/− buttons, drag-to-swap and crop-based zoom are unchanged.
+- The Windows hook is removed at application shutdown; if installation fails, the footer controls continue to work.

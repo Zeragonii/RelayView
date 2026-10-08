@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from .zoom import ZoomState
+from .windows_mouse_bridge import WindowsMouseBridge
 from .models import Stream
 from .vlc_backend import VLCBackend, VLCPlayer
 from .logging_config import get_logger, redact_url
@@ -205,7 +206,7 @@ class GridTile(QFrame):
             self._update_zoom()
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
-        if obj is self.video and event.type() == QEvent.Type.Wheel:
+        if obj is self.video and event.type() == QEvent.Type.Wheel and not sys.platform.startswith("win"):
             self.zoom_by(1 if event.angleDelta().y() > 0 else -1)
             return True
         return super().eventFilter(obj, event)
@@ -292,6 +293,7 @@ class GridView(QWidget):
         self.layout_grid.setSpacing(8)
         log.debug("GridView init backend=%s", bool(backend))
         self.configure(2, 2, [])
+        self._native_mouse = WindowsMouseBridge(self)
 
     def configure(self, rows: int, columns: int, streams: list[Stream | None]) -> None:
         rows = max(1, int(rows))
