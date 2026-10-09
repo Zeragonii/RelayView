@@ -1,3 +1,55 @@
+# RelayView v0.5.0 — libmpv playback migration
+
+**Status: Windows integration candidate — native rendering must be validated on a real machine before publishing to automatic-update users.**
+
+RelayView's camera and playlist UI, saved grid layouts, favourites, volume/mute,
+fullscreen, drag-to-swap, crash supervision, update restart, and one-worker-per-feed
+isolation are retained. The native decoder has changed from **libVLC** to
+**libmpv**. No VLC installation or `python-vlc` package is required.
+
+### Zoom and panning
+
+Zoom is now performed *inside mpv's renderer*, not by VLC crop geometry or by
+moving/resizing the embedded Qt window. Each tile is always rendered to a fixed
+Qt video HWND; zoom sends `video-zoom=log2(factor)` and panning uses bounded
+`video-align-x` / `video-align-y` transforms. This avoids the viewport-centering
+and flicker problems observed with v0.4.x, but remains unverified until tested on
+Windows with live RTSP cameras.
+
+- Zoom: mouse wheel, tile `+` / `−` buttons, or right-click menu, 1×–5×.
+- Pan: hold the middle mouse button and drag over the video, or use the tile
+  context menu. Left drag still swaps camera tiles.
+- Per-tile zoom/pan is preserved while its worker automatically reconnects.
+  Reassigning a tile or restarting RelayView resets its zoom.
+- Frames are **not** copied into Qt and no custom CPU pixel renderer is used.
+
+### Build and install
+
+The existing **single** `.github/workflows/build.yml` still creates one Windows
+installer and publishes tag releases with Velopack. On first run, the runner
+downloads a pinned `libmpv-2.dll` package with SHA256 verification; later runs
+restore it from the GitHub Actions cache. The Windows job now includes a native
+libmpv API smoke test as well as the Qt startup smoke test.
+
+For source-mode development on Windows, place a compatible `libmpv-2.dll` and
+its required native dependencies in a `mpv/` directory beside `main.py`. For
+packaged releases the workflow bundles it automatically.
+
+**Licensing:** the selected upstream native build includes GPL components.
+Read `THIRD_PARTY_NOTICES.md` before publicly redistributing a combined installer.
+The standalone RelayView Python source remains MIT-licensed.
+
+**Important test plan:** after Windows CI passes, check single camera playback;
+2×1 and 4×4 RTSP grids; GPU utilisation; 2–4× zoom and middle-drag pan; stream
+loss and recovery; tile swaps; mute/pause; saving/restoring layouts; update install
+and automatic app restart. Do not publish the auto-update release solely on the
+strength of the unit tests; they cannot verify native Windows D3D rendering.
+
+---
+
+<details>
+<summary>Previous release notes (libVLC era, v0.4.8 and older)</summary>
+
 ### v0.4.8 — Qt startup regression fix
 
 - Fixes an immediate launch failure in v0.4.7: `GridTile.eventFilter()` could run while its `video` widget had not yet been created. The event filter is now installed after constructing both native windows, and is guarded against early Qt resize events.
@@ -121,7 +173,7 @@ RelayView is a small, modern desktop viewer for M3U/M3U8 camera playlists. It is
 - Pause, mute and fullscreen controls
 - Drag-and-drop playlists
 - Remembers the last playlist, stream and window geometry
-- Embedded libVLC playback
+- Embedded libmpv playback (v0.5.0+)
 - Windows installer and delta updates via Velopack/GitHub Releases
 
 ## Keyboard shortcuts
@@ -152,7 +204,7 @@ For the first run after this workflow change, both Windows caches will be cold. 
 
 RelayView uses Velopack. Install `RelayView-Setup.exe` from the latest GitHub Release once; subsequent releases can be downloaded as delta updates from inside RelayView when available.
 
-The packaged Windows build includes a trimmed VLC runtime, so a separate VLC installation is not required.
+The packaged Windows build includes a pinned libmpv runtime, so no separate player installation is required.
 
 ### Creating a release
 
@@ -301,3 +353,5 @@ RelayView now hosts each libVLC media player in a separate child process. The ma
 - Existing wheel zoom and tile swapping remain unchanged.
 
 Windows native video handling must be checked on a real installation.
+
+</details>

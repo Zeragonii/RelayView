@@ -7,21 +7,19 @@ def test_zoom_bounds_and_reset():
     assert state.factor == 5
     state.change(-100)
     assert state.factor == 1
-    assert state.crop(1920, 1080) is None
+    state.reset()
+    assert (state.factor, state.cx, state.cy) == (1, .5, .5)
 
 
-def test_crop_center():
-    state = ZoomState(2)
-    assert state.crop(1920, 1080) == "1440x810+480+270"
-
-
-def test_pan_clamped_to_video():
+def test_pan_bounds():
     state = ZoomState(2)
     state.move(100, 100)
-    assert state.crop(1920, 1080) == "1920x1080+960+540"
+    assert (state.cx, state.cy) == (.75, .75)
     state.move(-100, -100)
-    assert state.crop(1920, 1080) == "960x540+0+0"
+    assert (state.cx, state.cy) == (.25, .25)
 
 
-def test_invalid_dimensions():
-    assert ZoomState(2).crop(0, 1080) is None
+def test_pan_clamps_after_zoom_change():
+    state = ZoomState(5, .1, .9)
+    state.change(-12)  # 5x -> 2x
+    assert (state.cx, state.cy) == (.25, .75)

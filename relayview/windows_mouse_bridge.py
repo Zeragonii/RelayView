@@ -1,6 +1,6 @@
-"""Scoped Windows mouse input for libVLC's out-of-process child HWNDs.
+"""Scoped Windows mouse input for libmpv's out-of-process child HWNDs.
 
-libVLC's native video windows may be owned by another process: Qt's event
+libmpv's native video windows may be owned by another process: Qt's event
 filter cannot receive their mouse events. A low-level mouse hook runs on our
 Qt UI thread and only acts inside a visible grid video rectangle.
 """
@@ -58,7 +58,7 @@ if sys.platform == 'win32':
             
             self._pan_timer = QTimer(self)
             self._pan_timer.setSingleShot(True)
-            self._pan_timer.setInterval(33)  # HWND movement is inexpensive; ~30Hz feels responsive.
+            self._pan_timer.setInterval(33)  # Coalesce mpv property updates to at most 30 Hz.
             self._pan_timer.timeout.connect(self._flush_pan)
             self._proc = _HOOKPROC(self._callback)  # Keep callback alive while hooked.
             user32 = ctypes.windll.user32
@@ -76,7 +76,7 @@ if sys.platform == 'win32':
             if not self._hook:
                 log.warning('Windows mouse hook could not be installed: error=%s', ctypes.get_last_error())
             else:
-                log.info('Native VLC mouse wheel/pan bridge installed')
+                log.info('Native mpv mouse wheel/pan bridge installed')
             app = QApplication.instance()
             if app:
                 app.aboutToQuit.connect(self.close)
@@ -98,10 +98,10 @@ if sys.platform == 'win32':
 
         def _tile_at(self, global_pos):
             for tile in self.grid.tiles:
-                if tile.stream is None or not tile.isVisible() or not tile.video_viewport.isVisible():
+                if tile.stream is None or not tile.isVisible() or not tile.video.isVisible():
                     continue
-                local = tile.video_viewport.mapFromGlobal(global_pos)
-                if tile.video_viewport.rect().contains(local):
+                local = tile.video.mapFromGlobal(global_pos)
+                if tile.video.rect().contains(local):
                     return tile
             return None
 
@@ -145,16 +145,16 @@ if sys.platform == 'win32':
                 if tile not in self.grid.tiles or not tile.isVisible() or tile.zoom.factor <= 1:
                     self._clear_pan()
                     return False
-                # Pan the over-sized child HWND relative to a fixed pointer anchor.
-                # VLC itself stays at an unchanged crop / zoom setting.
+                # libmpv's native video-align properties position the picture.
+                # Keep drag anchored, not cumulative, so it never recentres.
                 dx = pos.x() - self._pan_origin.x()
                 dy = pos.y() - self._pan_origin.y()
                 factor = tile.zoom.factor
                 margin = 0.5 / factor
                 # Fraction of the *visible image*: full tile drag moves one
                 # viewport, independent of the original source resolution.
-                cx = self._pan_center[0] - dx / (max(1, tile.video_viewport.width()) * factor)
-                cy = self._pan_center[1] - dy / (max(1, tile.video_viewport.height()) * factor)
+                cx = self._pan_center[0] - dx / (max(1, tile.video.width()) * factor)
+                cy = self._pan_center[1] - dy / (max(1, tile.video.height()) * factor)
                 cx = max(margin, min(1 - margin, cx))
                 cy = max(margin, min(1 - margin, cy))
                 self._pan_target = (cx, cy)
@@ -175,7 +175,7 @@ if sys.platform == 'win32':
                 return
             if abs(tile.zoom.cx - target[0]) < 0.0005 and abs(tile.zoom.cy - target[1]) < 0.0005:
                 return
-            # Move the child HWND outside the native hook, on Qt's event loop.
+            # Send libmpv transform changes outside the Windows low-level hook.
             QTimer.singleShot(0, lambda t=tile, c=target: self._apply_pan(t, c))
 
         def _apply_pan(self, tile, target):

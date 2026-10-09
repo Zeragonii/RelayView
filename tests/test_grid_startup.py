@@ -45,8 +45,7 @@ def test_event_filter_is_safe_before_video_widget_exists():
     GridTile = _filter_method_without_qt()
     tile = GridTile()
     viewport = object()
-    tile.video_viewport = viewport
-    tile._apply_zoom_geometry = lambda: pytest.fail("geometry called before video created")
+    tile.zoom_by = lambda *args: pytest.fail("zoom called without video")
 
     class Event:
         def __init__(self, kind):
@@ -61,7 +60,7 @@ def test_event_filter_is_safe_before_video_widget_exists():
 def test_event_filter_is_installed_after_video_widget_creation():
     """Avoid future regressions from prematurely installing the native filter."""
     source = GRID_SOURCE.read_text(encoding="utf-8")
-    assert source.index('self.video = QFrame(self.video_viewport, objectName="gridVideo")') < source.index('self.video_viewport.installEventFilter(self)')
+    assert source.index('self.video = QFrame(objectName="gridVideo")') < source.index('self.video.installEventFilter(self)')
 
 
 def test_grid_constructs_and_resizes_in_real_qt():
@@ -80,8 +79,7 @@ def test_grid_constructs_and_resizes_in_real_qt():
         app.processEvents()
         for tile in widget.tiles:
             assert tile.video is not None
-            assert tile.video_viewport is not None
-            assert tile.video.parentWidget() is tile.video_viewport
+            assert tile.video.parentWidget() is tile
             assert tile.video.width() > 0 and tile.video.height() > 0
         widget.configure(2, 1, [])
         app.processEvents()

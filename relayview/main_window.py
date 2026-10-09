@@ -32,7 +32,7 @@ from .grid_view import GridSizeDialog, GridView, MAX_GRID_TILES
 from .grid_profiles import validate_profile, resolve_assignments
 from .playlist import load_m3u
 from .playlist_editor import PlaylistEditorDialog
-from .vlc_backend import VLCBackend
+from .mpv_backend import MPVBackend
 from .updater import UpdateCheckThread, UpdateDownloadThread, handoff_update_and_restart
 from . import __version__
 from .diagnostics import diagnostic_summary
@@ -42,7 +42,7 @@ log = get_logger("ui")
 
 
 class MainWindow(QMainWindow):
-    vlc_status = Signal(str)
+    mpv_status = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -67,9 +67,9 @@ class MainWindow(QMainWindow):
         self._update_check_thread = None
         self._update_download_thread = None
 
-        self.vlc_status.connect(self._set_status)
+        self.mpv_status.connect(self._set_status)
         try:
-            self.backend = VLCBackend(lambda text: self.vlc_status.emit(text))
+            self.backend = MPVBackend(lambda text: self.mpv_status.emit(text))
         except RuntimeError as exc:
             self.backend = None
             QTimer.singleShot(0, lambda: self._fatal_player_error(str(exc)))
@@ -628,7 +628,7 @@ class MainWindow(QMainWindow):
             return
 
         # The single player must be detached and fully stopped while its QWidget/HWND
-        # is still alive. Only after VLC has returned from stop() do we rebuild/show
+        # is still alive. Only after the media worker has exited do we rebuild/show
         # grid widgets. This avoids native video-output teardown racing Qt window changes.
         if self.backend and self._view_mode == "single":
             log.info("Transition single->grid: quiescing primary before grid changes")
@@ -680,7 +680,7 @@ class MainWindow(QMainWindow):
             return
         log.info("Transition grid->single begin")
         # Release grid players completely while their host widgets still exist.
-        # This mirrors the single->grid path and prevents native VLC video output
+        # This mirrors the single->grid path and prevents native mpv video output
         # from retaining HWNDs after Qt changes the visible page.
         self.grid_view.release_all_players()
         log.info("Transition grid->single: grid players released")
@@ -894,9 +894,9 @@ class MainWindow(QMainWindow):
         self.settings.setValue("geometry", self.saveGeometry())
         self._save_grid_state()
         if self.backend:
-            log.info("closeEvent: VLC backend shutdown begin")
+            log.info("closeEvent: mpv backend shutdown begin")
             self.backend.shutdown()
-            log.info("closeEvent: VLC backend shutdown returned")
+            log.info("closeEvent: mpv backend shutdown returned")
         super().closeEvent(event)
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802 - Qt API

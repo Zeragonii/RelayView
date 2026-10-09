@@ -14,7 +14,7 @@ def test_bridge_connected_to_grid_and_scoped_to_video():
     source = (root / 'grid_view.py').read_text()
     mouse = (root / 'windows_mouse_bridge.py').read_text()
     assert 'self._native_mouse = WindowsMouseBridge(self)' in source
-    assert 'tile.video_viewport.rect().contains(local)' in mouse
+    assert 'tile.video.rect().contains(local)' in mouse
     assert 'WM_MOUSEWHEEL' in mouse and 'WM_MBUTTONDOWN' in mouse
     assert 'app.aboutToQuit.connect(self.close)' in mouse
 

@@ -1,3 +1,4 @@
+"""Isolated libmpv decoder and video renderer, controlled by newline JSON IPC."""
 from __future__ import annotations
 
 import json
@@ -8,34 +9,22 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from .mpv_native import (MPV_EVENT_END_FILE,
+                         MPV_EVENT_FILE_LOADED, MPV_EVENT_NONE, MpvClient,
+                         MpvError, view_properties)
+
 
 def _worker_log(message: str) -> None:
-    """Best-effort per-process logging without sharing RotatingFileHandler state."""
     try:
-        base = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "RelayView" / "logs"
-        base.mkdir(parents=True, exist_ok=True)
-        line = f"{datetime.now().isoformat(timespec='milliseconds')} | pid={os.getpid()} | {message}\n"
-        with (base / "player-workers.log").open("a", encoding="utf-8") as handle:
-            handle.write(line)
+        directory = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "RelayView" / "logs"
+        directory.mkdir(parents=True, exist_ok=True)
+        with (directory / "player-workers.log").open("a", encoding="utf-8") as file:
+            file.write(f"{datetime.now().isoformat(timespec='milliseconds')} | pid={os.getpid()} | {message}\n")
     except Exception:
         pass
 
 
-def _configure_vlc() -> None:
-    if getattr(sys, "frozen", False):
-        root = Path(sys.executable).resolve().parent
-    else:
-        root = Path(__file__).resolve().parent.parent
-    bundled = root / "vlc"
-    if bundled.exists():
-        os.environ["PATH"] = str(bundled) + os.pathsep + os.environ.get("PATH", "")
-        plugins = bundled / "plugins"
-        if plugins.exists():
-            os.environ["VLC_PLUGIN_PATH"] = str(plugins)
-
-
 def _emit(event: str, **fields) -> None:
-    # stdout is exclusively for protocol messages; logs go to the worker logfile.
     try:
         sys.stdout.write(json.dumps({"event": event, **fields}, separators=(",", ":")) + "\n")
         sys.stdout.flush()
@@ -43,95 +32,136 @@ def _emit(event: str, **fields) -> None:
         pass
 
 
-def _report_player(player, stop_event: threading.Event) -> None:
-    """Report native VLC state from within the isolated worker process."""
-    last_state = None
-    last_frames = -1
-    while not stop_event.wait(1.0):
+def _report_player(client: MpvClient, stop: threading.Event, loaded: threading.Event, started: threading.Event) -> None:
+    previous_state = None
+    previous_pts: float | None = None
+    frame_count = 0
+    while not stop.wait(1.0):
         try:
-            state = str(player.get_state()).split(".")[-1]
+            if not client.initialized:
+                _emit("heartbeat", state="Opening")
+                continue
+            # Drain native player events. An RTSP stream ending unexpectedly should
+            # recover just like an unhandled process exit.
+            for _ in range(128):
+                event_id, reason = client.event()
+                if event_id == MPV_EVENT_NONE:
+                    break
+                if event_id == MPV_EVENT_FILE_LOADED:
+                    loaded.set()
+                elif event_id == MPV_EVENT_END_FILE and started.is_set():
+                    _worker_log(f"stream ended reason={reason}")
+                    _emit("state", value="Error")
+                    return
+            idle = client.read("idle-active") == "yes"
+            paused = client.read("pause") == "yes"
+            buffering = client.read("paused-for-cache") == "yes"
+            state = "Opening" if idle and not loaded.is_set() else ("Error" if idle else ("Paused" if paused else ("Buffering" if buffering else "Playing")))
             _emit("heartbeat", state=state)
-            # libVLC video decoder statistics are unavailable for some streams.
-            # Never invent frame progress when the decoder does not expose it.
-            if state == "Playing":
-                try:
-                    media = player.get_media()
-                    stats_result = media.get_stats() if media else None
-                    stats = stats_result[1] if isinstance(stats_result, tuple) and len(stats_result) == 2 and stats_result[0] else None
-                    frames = getattr(stats, "displayed_pictures", None) if stats is not None else None
-                    if frames is not None and int(frames) >= 0 and int(frames) != last_frames:
-                        last_frames = int(frames)
-                        _emit("progress", frames=last_frames)
-                except (AttributeError, TypeError, ValueError):
-                    pass
-            if state != last_state:
+            if state != previous_state:
                 _emit("state", value=state)
-                last_state = state
+                previous_state = state
+            if state == "Playing":
+                # video-pts is a video-specific clock; time-pos alone may move
+                # even when a displayed frame is frozen. Don't fabricate progress.
+                pts = client.read("video-pts")
+                try:
+                    parsed = float(pts) if pts is not None else None
+                except (ValueError, TypeError):
+                    parsed = None
+                # Video PTS can reset on RTSP reconnect or clock discontinuity;
+                # any genuine change counts as progress, not only increases.
+                if parsed is not None and (previous_pts is None or abs(parsed - previous_pts) > 0.00001):
+                    frame_count += 1
+                    _emit("progress", frames=frame_count)
+                    previous_pts = parsed
         except Exception as exc:
-            _worker_log(f"state polling failed: {type(exc).__name__}")
+            _worker_log(f"polling failed: {type(exc).__name__}: {exc}")
             _emit("state", value="Error")
             return
 
 
 def run_worker() -> int:
-    _worker_log("worker starting")
+    _worker_log("libmpv worker starting")
     try:
-        _configure_vlc()
-        import vlc
-        instance = vlc.Instance("--no-video-title-show", "--quiet", "--network-caching=250", "--clock-jitter=0")
-        player = instance.media_player_new()
+        client = MpvClient()
     except Exception as exc:
-        _worker_log(f"initialisation failed: {exc!r}")
-        _emit("fatal", message="VLC initialisation failed")
+        _worker_log(f"mpv load failed: {type(exc).__name__}: {exc}")
+        _emit("fatal", message="libmpv runtime unavailable")
         return 2
 
-    stop_event = threading.Event()
-    threading.Thread(target=_report_player, args=(player, stop_event), daemon=True, name="vlc-state").start()
+    stop = threading.Event()
+    loaded = threading.Event()
+    started = threading.Event()
+    hwnd = None
+    desired_volume = 100
+    desired_muted = False
+    desired_paused = False
+    desired_view = (1.0, 0.5, 0.5)
     _emit("ready")
+    reporter = threading.Thread(target=_report_player, args=(client, stop, loaded, started),
+                                daemon=True, name="mpv-monitor")
+    reporter.start()
 
-    # Intentionally never call player.stop()/release() on normal teardown. The
-    # parent process terminates this worker to let Windows reclaim native libVLC
-    # resources atomically, isolating known RTSP teardown crashes from the GUI.
     try:
         for raw in sys.stdin:
+            command = None
             try:
                 msg = json.loads(raw)
                 command = msg.get("command")
                 if command == "attach":
-                    hwnd = int(msg.get("hwnd", 0))
-                    if sys.platform.startswith("win"):
-                        player.set_hwnd(hwnd)
-                    elif sys.platform == "darwin":
-                        player.set_nsobject(hwnd)
-                    else:
-                        player.set_xwindow(hwnd)
-                    _worker_log(f"attached hwnd={hwnd}")
+                    new_hwnd = int(msg.get("hwnd", 0))
+                    if client.initialized and new_hwnd != hwnd and new_hwnd > 0:
+                        raise MpvError("video target changed after mpv initialization; start a new worker")
+                    hwnd = new_hwnd or None
                 elif command == "play":
+                    if not client.initialized:
+                        client.initialize(hwnd)
+                    loaded.clear()
+                    client.property("volume", desired_volume)
+                    client.property("mute", desired_muted)
+                    client.property("pause", desired_paused)
+                    for key, value in view_properties(*desired_view).items():
+                        client.property(key, value)
                     url = str(msg["url"])
-                    media = instance.media_new(url)
-                    player.set_media(media)
-                    result = player.play()
-                    _worker_log(f"play returned={result}")
-                    if result == -1:
-                        _emit("state", value="Error")
+                    started.set()
+                    client.command("loadfile", url, "replace")
+                    # URLs may contain passwords: never log the raw arguments.
+                    _worker_log("mpv loadfile accepted")
+                elif command == "zoom":
+                    desired_view = (float(msg.get("factor", 1)), float(msg.get("cx", 0.5)), float(msg.get("cy", 0.5)))
+                    if client.initialized:
+                        for key, value in view_properties(*desired_view).items():
+                            client.property(key, value)
+                    _emit("view", factor=desired_view[0], cx=desired_view[1], cy=desired_view[2])
                 elif command == "volume":
-                    player.audio_set_volume(max(0, min(100, int(msg.get("value", 100)))))
+                    desired_volume = max(0, min(100, int(msg.get("value", 100))))
+                    if client.initialized:
+                        client.property("volume", desired_volume)
                 elif command == "mute":
-                    player.audio_set_mute(bool(msg.get("value", False)))
+                    desired_muted = bool(msg.get("value", False))
+                    if client.initialized:
+                        client.property("mute", desired_muted)
                 elif command == "pause":
-                    player.set_pause(1 if bool(msg.get("value", False)) else 0)
+                    desired_paused = bool(msg.get("value", False))
+                    if client.initialized:
+                        client.property("pause", desired_paused)
                 elif command == "ping":
                     _emit("pong")
-            except Exception as exc:
-                _worker_log(f"command failed: {type(exc).__name__}")
+            except (ValueError, TypeError, MpvError, KeyError) as exc:
+                _worker_log(f"command {command} failed: {type(exc).__name__}: {exc}")
                 _emit("command_error", command=command)
+                if command == "play":
+                    _emit("state", value="Error")
     except Exception as exc:
-        _worker_log(f"worker loop failed: {exc!r}")
+        _worker_log(f"IPC failed: {type(exc).__name__}: {exc}")
         return 3
-
-    stop_event.set()
-    _worker_log("stdin closed; exiting without libVLC teardown")
-    os._exit(0)
+    finally:
+        stop.set()
+        # Process termination isolates third-party native shutdown paths.
+        # Worker handles are reclaimed by the OS after exit.
+        _worker_log("worker stdin closed")
+    return 0
 
 
 if __name__ == "__main__":

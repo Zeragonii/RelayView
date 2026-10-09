@@ -73,35 +73,40 @@ jobs:
         run: pip install -r requirements-dev.txt
 
       # A real Qt event-loop check catches native widget construction errors
-      # that parser-only tests cannot, before the expensive VLC/installer steps.
+      # that parser-only tests cannot, before native packaging steps.
       - name: Smoke test Windows Qt grid startup
         shell: powershell
         run: python -m pytest -q tests/test_grid_startup.py
 
-      # Cache the trimmed runtime rather than the full Chocolatey installation.
-      # Changing the VLC version or trimming script invalidates this cache.
-      - name: Restore trimmed VLC runtime
-        id: vlc-cache
+      # Reuse the pinned, checksum-verified libmpv DLL across ordinary builds.
+      - name: Restore libmpv runtime
+        id: mpv-cache
         uses: actions/cache@v4
         with:
-          path: .cache/vlc-runtime
-          key: vlc-win64-3.0.23-${{ hashFiles('scripts/trim_vlc.ps1') }}
+          path: .cache/mpv-runtime
+          key: mpv-win64-20261008-36bf3d5290-${{ hashFiles('scripts/prepare_mpv.ps1') }}
 
-      - name: Prepare trimmed VLC runtime (cache miss)
-        if: steps.vlc-cache.outputs.cache-hit != 'true'
+      - name: Prepare libmpv runtime (cache miss)
+        if: steps.mpv-cache.outputs.cache-hit != 'true'
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .\scripts\prepare_mpv.ps1
+
+      - name: Verify libmpv runtime
         shell: powershell
         run: |
-          choco install vlc --version=3.0.23 --no-progress -y
-          .\scripts\trim_vlc.ps1 -Source "C:\Program Files\VideoLAN\VLC" -Destination ".cache\vlc-runtime"
-
-      - name: Verify VLC runtime
-        shell: powershell
-        run: |
-          foreach ($file in @('libvlc.dll', 'libvlccore.dll')) {
-            if (!(Test-Path (Join-Path '.cache\vlc-runtime' $file))) {
-              throw "VLC runtime cache is missing $file"
-            }
+          if (!(Test-Path '.cache\mpv-runtime\libmpv-2.dll')) {
+            throw 'libmpv-2.dll not found in runtime cache'
           }
+
+      - name: Smoke test native libmpv C API
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Path mpv -Force | Out-Null
+          Copy-Item -Path '.cache\mpv-runtime\*.dll' -Destination mpv -Force
+          python scripts/smoke_mpv.py
+          Remove-Item mpv -Recurse -Force
 
       # PyInstaller's binary cache is reusable across runner instances; the
       # application itself is still rebuilt from the checked-out source.
@@ -136,16 +141,17 @@ jobs:
           --exclude-module PySide6.QtTest
           main.py
 
-      - name: Bundle cached VLC runtime
+      - name: Bundle cached libmpv runtime
         shell: powershell
         run: |
-          Copy-Item -Path ".cache\vlc-runtime" -Destination "dist\RelayView\vlc" -Recurse -Force
+          Copy-Item -Path ".cache\mpv-runtime" -Destination "dist\RelayView\mpv" -Recurse -Force
 
       - name: Add notices
         shell: powershell
         run: |
           Copy-Item README.md "dist\RelayView\README.md"
           Copy-Item LICENSE "dist\RelayView\LICENSE"
+          Copy-Item THIRD_PARTY_NOTICES.md "dist\RelayView\THIRD_PARTY_NOTICES.md"
 
       - name: Report unpacked size
         shell: powershell

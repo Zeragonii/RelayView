@@ -1,4 +1,3 @@
 PySide6==6.11.2
-python-vlc==3.0.21203
 
 velopack==1.2.161

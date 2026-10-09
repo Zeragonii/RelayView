@@ -19,26 +19,26 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .zoom import ZoomState, viewport_geometry
+from .zoom import ZoomState
 from .windows_mouse_bridge import WindowsMouseBridge
 from .models import Stream
-from .vlc_backend import VLCBackend, VLCPlayer
+from .mpv_backend import MPVBackend, MPVPlayer
 from .logging_config import get_logger, redact_url
 
 log = get_logger("grid")
 
 GRID_MIME = "application/x-relayview-grid-tile"
-MAX_GRID_TILES = 64  # A practical guardrail against accidentally launching hundreds of VLC processes.
+MAX_GRID_TILES = 64  # A practical guardrail against accidentally launching hundreds of mpv processes.
 
 
 def _prepare_windows_video_host(widget: QWidget) -> int:
-    """Return a libVLC-safe native HWND for a Qt video host on Windows."""
+    """Return a libmpv-safe native HWND for a Qt video host on Windows."""
     hwnd = int(widget.winId())
     log.debug("Preparing video host widget=%s hwnd=%s platform=%s", id(widget), hwnd, sys.platform)
     if not sys.platform.startswith("win"):
         return hwnd
 
-    # libVLC documents WS_CLIPCHILDREN as required for set_hwnd().
+    # libmpv documents WS_CLIPCHILDREN as required for set_hwnd().
     # WS_CLIPSIBLINGS is also appropriate for a tiled child-window layout.
     import ctypes
 
@@ -122,7 +122,7 @@ class GridTile(QFrame):
         super().__init__(parent)
         self.index = index
         self.stream: Stream | None = None
-        self.player: VLCPlayer | None = None
+        self.player: MPVPlayer | None = None
         self._drag_start = QPoint()
         self._pan_start = QPoint()
         self.zoom = ZoomState()
@@ -136,24 +136,14 @@ class GridTile(QFrame):
         layout.setContentsMargins(1, 1, 1, 1)
         layout.setSpacing(0)
 
-        # The viewport stays fixed in the grid layout. A larger, movable native
-        # child hosts VLC. Windows clips child HWNDs to their native parent, so
-        # panning never changes VLC's crop or decoder settings.
-        self.video_viewport = QFrame(objectName="gridVideoViewport")
-        self.video_viewport.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
-        self.video_viewport.setMinimumSize(60, 40)
-        layout.addWidget(self.video_viewport, 1)
-
-        self.video = QFrame(self.video_viewport, objectName="gridVideo")
+        # Exactly one fixed native HWND per tile. libmpv scales/crops the *image*
+        # internally using video-zoom and video-align-x/y. Never resize or move
+        # an oversized QWidget to zoom; that caused letterboxing and jitter.
+        self.video = QFrame(objectName="gridVideo")
         self.video.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
-        self.video.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        # Not managed by a layout: resize/move independently inside the viewport.
-        self.video.setGeometry(0, 0, 60, 40)
-        self.video.show()
-        # Installing the filter before creating self.video caused Qt's initial
-        # native Resize event to enter eventFilter() during __init__. This must
-        # happen only after both widgets exist.
-        self.video_viewport.installEventFilter(self)
+        self.video.setMinimumSize(60, 40)
+        layout.addWidget(self.video, 1)
+        self.video.installEventFilter(self)
 
         footer = QFrame(objectName="gridTileFooter")
         # Footer must receive mouse events: Qt otherwise disables its +/- buttons.
@@ -197,23 +187,10 @@ class GridTile(QFrame):
         self.zoom.reset()
         self._update_zoom()
 
-    def _apply_zoom_geometry(self) -> None:
-        # An initial viewport resize can arrive while its child is being built.
-        if not hasattr(self, "video"):
-            return
-        rect = viewport_geometry(self.zoom, self.video_viewport.width(), self.video_viewport.height())
-        left, top, width, height = rect
-        # During panning, only move the HWND; never resize/reinitialise VLC's
-        # video output on each mouse-move. Resizing happens when zoom changes
-        # or the tile is resized by the grid.
-        if self.video.width() != width or self.video.height() != height:
-            self.video.resize(width, height)
-        if self.video.x() != left or self.video.y() != top:
-            self.video.move(left, top)
-
     def _update_zoom(self) -> None:
         self.zoom_label.setText(f"{self.zoom.factor:g}×" if self.zoom.factor > 1 else "")
-        self._apply_zoom_geometry()
+        if self.player is not None:
+            self.player.set_zoom(self.zoom.factor, self.zoom.cx, self.zoom.cy)
         self.zoom_changed.emit(self.index)
 
     def zoom_by(self, steps: int) -> None:
@@ -235,14 +212,7 @@ class GridTile(QFrame):
             self._update_zoom()
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
-        # Native Qt window creation may dispatch Resize before the full tile
-        # exists. Never dereference self.video until its initialisation ends.
-        video = getattr(self, "video", None)
-        if obj is self.video_viewport and event.type() == QEvent.Type.Resize:
-            if video is not None:
-                self._apply_zoom_geometry()
-        if (video is not None and obj in (video, self.video_viewport)
-                and event.type() == QEvent.Type.Wheel
+        if (obj is getattr(self, "video", None) and event.type() == QEvent.Type.Wheel
                 and not sys.platform.startswith("win")):
             self.zoom_by(1 if event.angleDelta().y() > 0 else -1)
             return True
@@ -278,7 +248,7 @@ class GridTile(QFrame):
             pos = event.position().toPoint()
             delta = pos - self._pan_start
             self._pan_start = pos
-            self.pan_by(-delta.x() / max(1, self.video_viewport.width()), -delta.y() / max(1, self.video_viewport.height()))
+            self.pan_by(-delta.x() / max(1, self.video.width()), -delta.y() / max(1, self.video.height()))
             event.accept()
             return
         if not (event.buttons() & Qt.MouseButton.LeftButton):
@@ -313,7 +283,7 @@ class GridView(QWidget):
     active_changed = Signal(int)
     assignments_changed = Signal()
 
-    def __init__(self, backend: VLCBackend | None, parent=None) -> None:
+    def __init__(self, backend: MPVBackend | None, parent=None) -> None:
         super().__init__(parent)
         self.backend = backend
         self.rows = 2
@@ -338,7 +308,7 @@ class GridView(QWidget):
         if rows * columns > MAX_GRID_TILES:
             raise ValueError(f"Grid exceeds the {MAX_GRID_TILES}-tile safety limit")
         if self.tiles and rows == self.rows and columns == self.columns:
-            # Preserve native HWNDs and the VLC processes when only assignments change.
+            # Preserve native HWNDs and the mpv processes when only assignments change.
             if streams is not None:
                 changed = False
                 for index, tile in enumerate(self.tiles):
@@ -400,10 +370,10 @@ class GridView(QWidget):
     def _update_tile_zoom(self, index: int) -> None:
         if 0 <= index < len(self.tiles):
             tile = self.tiles[index]
-            log.debug("Viewport zoom tile=%s factor=%.2f center=(%.3f, %.3f) geometry=%s",
-                      index, tile.zoom.factor, tile.zoom.cx, tile.zoom.cy, tile.video.geometry())
+            log.debug("libmpv zoom tile=%s factor=%.2f center=(%.3f, %.3f)",
+                      index, tile.zoom.factor, tile.zoom.cx, tile.zoom.cy)
 
-    def _ensure_player(self, tile: GridTile) -> VLCPlayer | None:
+    def _ensure_player(self, tile: GridTile) -> MPVPlayer | None:
         if not self.backend:
             return None
         if tile.player is None:
@@ -438,12 +408,7 @@ class GridView(QWidget):
         player = self._ensure_player(tile)
         if not player:
             return
-        # winId() is requested only after the tile is visible and the event loop has
-        # had a chance to create a stable native HWND. Attach exactly once per start.
-        # Make both HWNDs native before passing the inner HWND to VLC. The
-        # outer one is the clipping boundary, independent of video size.
-        _prepare_windows_video_host(tile.video_viewport)
-        tile._apply_zoom_geometry()
+        # Keep one stable native HWND per tile; mpv owns only its internal image transform.
         hwnd = _prepare_windows_video_host(tile.video)
         log.info("Starting grid tile=%s player=%s hwnd=%s stream=%s", tile.index, id(player), hwnd, redact_url(tile.stream.url))
         if (getattr(player, "_current_url", None) == tile.stream.url
@@ -452,6 +417,7 @@ class GridView(QWidget):
             # when opening the same grid or restoring an unchanged profile.
             return
         player.attach_video(hwnd)
+        player.set_zoom(tile.zoom.factor, tile.zoom.cx, tile.zoom.cy)
         player.play(tile.stream.url)
         player.set_volume(self._volume)
         player.set_muted(self._muted)
@@ -485,18 +451,17 @@ class GridView(QWidget):
         if self.isVisible():
             player = self._ensure_player(tile)
             if player:
-                _prepare_windows_video_host(tile.video_viewport)
-                tile._apply_zoom_geometry()
                 player.attach_video(_prepare_windows_video_host(tile.video))
+                player.set_zoom(tile.zoom.factor, tile.zoom.cx, tile.zoom.cy)
                 player.play(stream.url)
                 player.set_volume(self._volume)
                 player.set_muted(self._muted)
         self.assignments_changed.emit()
 
     def swap_tiles(self, source: int, target: int) -> None:
-        """Move the existing QWidget/video host, not the stream or VLC process.
+        """Move the existing QWidget/video host, not the stream or mpv process.
 
-        libVLC remains attached to each tile's original HWND. Swapping assignments
+        libmpv remains attached to each tile's original HWND. Swapping assignments
         would tear down both decoders and cause visible reconnection delays.
         """
         if not (0 <= source < len(self.tiles) and 0 <= target < len(self.tiles)) or source == target:
