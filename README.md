@@ -219,6 +219,25 @@ The **same** GitHub Actions workflow continues to run tests, build the Windows e
 
 For the first run after this workflow change, both Windows caches will be cold. Cache entries can also be evicted by GitHub. The release trigger, version/tag validation, updater feed, and installer artifact remain unchanged.
 
+### v0.5.0 Windows CI smoke-test hotfix
+
+When upgrading v0.5.0 in an existing Git checkout, use the updated
+`.github/workflows/build.yml` and `scripts/smoke_mpv.py`. The Windows native
+smoke test must run **from the repository root** as:
+
+```powershell
+python -m scripts.smoke_mpv
+```
+
+A portable import-path preflight is available without the Windows libmpv DLL:
+
+```powershell
+python -m scripts.smoke_mpv --import-only
+```
+
+This is a CI-only correction; the application version remains 0.5.0. The native
+smoke test and RTSP playback still need to run successfully on Windows.
+
 ## Windows releases
 
 RelayView uses Velopack. Install `RelayView-Setup.exe` from the latest GitHub Release once; subsequent releases can be downloaded as delta updates from inside RelayView when available.

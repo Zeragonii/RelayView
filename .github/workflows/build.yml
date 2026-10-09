@@ -107,7 +107,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path mpv -Force | Out-Null
           Copy-Item -Path '.cache\mpv-runtime\*.dll' -Destination mpv -Force
-          python scripts/smoke_mpv.py
+          python -m scripts.smoke_mpv
           Remove-Item mpv -Recurse -Force
 
       # PyInstaller's binary cache is reusable across runner instances; the
