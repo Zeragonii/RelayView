@@ -7,6 +7,25 @@ fullscreen, drag-to-swap, crash supervision, update restart, and one-worker-per-
 isolation are retained. The native decoder has changed from **libVLC** to
 **libmpv**. No VLC installation or `python-vlc` package is required.
 
+### Updating an existing Git checkout from v0.4.x
+
+**Important:** Unzipping v0.5.0 over a tracked v0.4.x checkout does **not** remove
+obsolete tests and VLC files. Before pushing or tagging the libmpv migration,
+run this once from the repository root:
+
+```powershell
+python scripts/cleanup_mpv_migration.py --fix
+git add -A
+git commit -m "Remove obsolete VLC and viewport tests after libmpv migration"
+git push
+```
+
+The script removes only four known obsolete files: `relayview/vlc_backend.py`,
+`scripts/trim_vlc.ps1`, `tests/test_viewport_zoom.py`, and
+`tests/test_vlc_lifecycle.py`. No working camera, playlist or settings data is
+modified. The CI test job now checks for these files and prints a clear error
+if the migration cleanup was missed.
+
 ### Zoom and panning
 
 Zoom is now performed *inside mpv's renderer*, not by VLC crop geometry or by

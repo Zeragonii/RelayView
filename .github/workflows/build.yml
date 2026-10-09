@@ -22,6 +22,8 @@ jobs:
           cache-dependency-path: requirements-dev.txt
       - name: Install test dependencies
         run: pip install pytest
+      - name: Check libmpv migration cleanup
+        run: python scripts/cleanup_mpv_migration.py
       - name: Run parser tests
         run: pytest -q
 
