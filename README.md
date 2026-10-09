@@ -1,4 +1,4 @@
-# RelayView v0.5.0 — libmpv playback migration
+# RelayView v0.5.1 — libmpv middle-mouse panning fix
 
 **Status: Windows integration candidate — native rendering must be validated on a real machine before publishing to automatic-update users.**
 
@@ -393,3 +393,20 @@ RelayView now hosts each libVLC media player in a separate child process. The ma
 Windows native video handling must be checked on a real installation.
 
 </details>
+
+
+### v0.5.1 — Polled middle-mouse pan
+
+- The low-level Windows mouse hook now handles **wheel zoom only**.
+- While RelayView is foreground, a 25 ms Qt timer polls `GetAsyncKeyState(VK_MBUTTON)`
+  and `QCursor.pos()` for reliable middle-dragging even over libmpv native child windows.
+- Pan state is anchored at mouse-down and clamped; releasing middle preserves position.
+- A small **✥** button appears next to zoom controls while zoomed. Its menu offers
+  manual pan directions and a reset option. If those work but dragging does not,
+  the issue is definitely mouse input, not libmpv alignment.
+- The GUI log reports `native={...}` in worker view acknowledgements, containing
+  the properties read back from libmpv after a zoom or pan command.
+- DEBUG logging contains `Middle pan start`, `Middle pan update`, and `Middle pan end`.
+  If no `Middle pan start` appears, check whether the mouse actually reports a physical
+  middle-button press (some mouse software remaps it to a keyboard shortcut).
+- Does not change RTSP decoding, mpv transforms, auto-update, saved grids, or stream workers.

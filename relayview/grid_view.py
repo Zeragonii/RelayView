@@ -171,6 +171,22 @@ class GridTile(QFrame):
         self.zoom_in_button.setToolTip("Zoom in this camera")
         self.zoom_in_button.clicked.connect(lambda: self.zoom_by(1))
         footer_l.addWidget(self.zoom_in_button)
+        # Always-Qt fallback for diagnosing a native middle-mouse issue.
+        # Only appears while zoomed, so an ordinary grid stays uncluttered.
+        self.pan_button = QToolButton()
+        self.pan_button.setText("✥")
+        self.pan_button.setToolTip("Pan zoomed video — useful if middle dragging is unavailable")
+        self.pan_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        pan_menu = QMenu(self.pan_button)
+        pan_menu.addAction("Pan left", lambda: self.pan_by(-0.2, 0))
+        pan_menu.addAction("Pan right", lambda: self.pan_by(0.2, 0))
+        pan_menu.addAction("Pan up", lambda: self.pan_by(0, -0.2))
+        pan_menu.addAction("Pan down", lambda: self.pan_by(0, 0.2))
+        pan_menu.addSeparator()
+        pan_menu.addAction("Reset position", self.reset_pan)
+        self.pan_button.setMenu(pan_menu)
+        footer_l.addWidget(self.pan_button)
+        self.pan_button.hide()
         layout.addWidget(footer)
 
     def set_active(self, active: bool) -> None:
@@ -189,6 +205,7 @@ class GridTile(QFrame):
 
     def _update_zoom(self) -> None:
         self.zoom_label.setText(f"{self.zoom.factor:g}×" if self.zoom.factor > 1 else "")
+        self.pan_button.setVisible(self.zoom.factor > 1)
         if self.player is not None:
             self.player.set_zoom(self.zoom.factor, self.zoom.cx, self.zoom.cy)
         self.zoom_changed.emit(self.index)
@@ -208,7 +225,16 @@ class GridTile(QFrame):
 
     def pan_by(self, dx: float, dy: float) -> None:
         if self.stream and self.zoom.factor > 1:
+            before = (self.zoom.cx, self.zoom.cy)
             self.zoom.move(dx, dy)
+            log.info("Manual pan tile=%s from=%s to=(%.3f, %.3f)",
+                     self.index, before, self.zoom.cx, self.zoom.cy)
+            self._update_zoom()
+
+    def reset_pan(self) -> None:
+        if self.stream and self.zoom.factor > 1:
+            self.zoom.cx = 0.5
+            self.zoom.cy = 0.5
             self._update_zoom()
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
@@ -236,7 +262,7 @@ class GridTile(QFrame):
         menu.exec(event.globalPos())
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        if event.button() == Qt.MouseButton.MiddleButton:
+        if event.button() == Qt.MouseButton.MiddleButton and not sys.platform.startswith("win"):
             self._pan_start = event.position().toPoint()
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start = event.position().toPoint()
@@ -244,7 +270,9 @@ class GridTile(QFrame):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        if event.buttons() & Qt.MouseButton.MiddleButton:
+        if (event.buttons() & Qt.MouseButton.MiddleButton) and not sys.platform.startswith("win"):
+            # Windows video tiles use a polled, physical button state instead.
+            # Never let both Qt and Windows independently pan the same tile.
             pos = event.position().toPoint()
             delta = pos - self._pan_start
             self._pan_start = pos

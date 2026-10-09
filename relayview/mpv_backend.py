@@ -259,8 +259,9 @@ class MPVPlayer:
                 self._schedule_retry("libmpv unavailable")
                 break
             elif kind == "view":
-                log.debug("Worker view acknowledgement pid=%s zoom=%s center=(%s,%s)",
-                          getattr(self._process, "pid", None), event.get("factor"), event.get("cx"), event.get("cy"))
+                log.debug("Worker view acknowledgement pid=%s zoom=%s center=(%s,%s) native=%s",
+                          getattr(self._process, "pid", None), event.get("factor"),
+                          event.get("cx"), event.get("cy"), event.get("actual"))
             elif kind == "command_error":
                 log.warning("Worker rejected command=%s", event.get("command"))
 

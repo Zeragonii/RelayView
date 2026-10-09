@@ -23,6 +23,12 @@ class FakeNative:
     def command(self, *args):
         self.calls.append(('command', args[0], '<redacted>'))
 
+    def read(self, name):
+        for entry in reversed(self.calls):
+            if entry[:2] == ('property', name):
+                return str(entry[2])
+        return None
+
 
 def test_worker_applies_view_and_volume_to_native_player(monkeypatch):
     fake = FakeNative()

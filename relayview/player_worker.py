@@ -130,10 +130,16 @@ def run_worker() -> int:
                     _worker_log("mpv loadfile accepted")
                 elif command == "zoom":
                     desired_view = (float(msg.get("factor", 1)), float(msg.get("cx", 0.5)), float(msg.get("cy", 0.5)))
+                    readback = {}
                     if client.initialized:
                         for key, value in view_properties(*desired_view).items():
                             client.property(key, value)
-                    _emit("view", factor=desired_view[0], cx=desired_view[1], cy=desired_view[2])
+                        # A real readback distinguishes GUI input failures from
+                        # commands that the native renderer ignored or rejected.
+                        for key in ("video-zoom", "video-align-x", "video-align-y"):
+                            readback[key] = client.read(key)
+                    _emit("view", factor=desired_view[0], cx=desired_view[1], cy=desired_view[2],
+                          actual=readback)
                 elif command == "volume":
                     desired_volume = max(0, min(100, int(msg.get("value", 100))))
                     if client.initialized:
