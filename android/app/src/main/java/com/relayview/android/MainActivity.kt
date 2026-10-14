@@ -27,10 +27,12 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.focus.focusable
+import androidx.compose.foundation.focusable
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -448,9 +450,9 @@ private fun CameraTile(
             }
             .pointerInput(index) { detectTapGestures(onTap = { onSelect() }, onDoubleTap = { onFullscreen() }) }
             .onFocusChanged { hasFocus = it.isFocused }
-            .onKeyEvent { key ->
-                if (key.type == KeyEventType.KeyUp &&
-                    (key.key == Key.Enter || key.key == Key.DirectionCenter || key.key == Key.NumPadEnter)) {
+            .onKeyEvent { event ->
+                if (event.type == KeyEventType.KeyUp &&
+                    (event.key == Key.Enter || event.key == Key.DirectionCenter || event.key == Key.NumPadEnter)) {
                     onSelect()
                     true
                 } else false
