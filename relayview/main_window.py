@@ -334,6 +334,13 @@ class MainWindow(QMainWindow):
         save_layout = QAction("Save current layout…", self)
         save_layout.triggered.connect(self.save_named_layout)
         layouts_menu.addAction(save_layout)
+        export_layouts = QAction("Export saved layouts to JSON…", self)
+        export_layouts.triggered.connect(self.export_named_layouts)
+        layouts_menu.addAction(export_layouts)
+        import_layouts = QAction("Import saved layouts from JSON…", self)
+        import_layouts.triggered.connect(self.import_named_layouts)
+        layouts_menu.addAction(import_layouts)
+        layouts_menu.addSeparator()
         delete_layout = layouts_menu.addMenu("Delete layout")
         profiles = self._named_layouts()
         if not profiles:
@@ -574,6 +581,53 @@ class MainWindow(QMainWindow):
         except (ValueError, TypeError):
             log.warning("Ignoring invalid named layout settings")
             return {}
+
+    def export_named_layouts(self) -> None:
+        """Share Windows QSettings layout JSON with RelayView Android."""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export saved camera layouts", "RelayView-layouts.json", "JSON files (*.json)"
+        )
+        if not path:
+            return
+        try:
+            Path(path).write_text(json.dumps(self._named_layouts(), indent=2), encoding="utf-8")
+            self.status_text.setText("Saved layouts exported")
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Export failed", str(exc))
+
+    def import_named_layouts(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import saved camera layouts", "", "JSON files (*.json)"
+        )
+        if not path:
+            return
+        try:
+            raw = json.loads(Path(path).read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("The layout file must contain named layouts")
+            imported = {}
+            for name, layout in raw.items():
+                if not isinstance(name, str) or not name.strip():
+                    continue
+                try:
+                    rows, columns, urls = validate_profile(layout)
+                except ValueError:
+                    continue
+                imported[name] = {"rows": rows, "columns": columns, "urls": urls}
+            if not imported:
+                raise ValueError("No supported layouts found")
+            existing = self._named_layouts()
+            duplicates = existing.keys() & imported.keys()
+            if duplicates and QMessageBox.question(
+                self, "Replace existing layouts?",
+                f"Overwrite {len(duplicates)} saved layout(s) with matching names?",
+            ) != QMessageBox.StandardButton.Yes:
+                return
+            existing.update(imported)
+            self.settings.setValue("named_grid_layouts", json.dumps(existing))
+            self.status_text.setText(f"Imported {len(imported)} saved layout(s)")
+        except (OSError, ValueError, TypeError) as exc:
+            QMessageBox.warning(self, "Import failed", str(exc))
 
     def save_named_layout(self) -> None:
         name, accepted = QInputDialog.getText(self, "Save camera layout", "Layout name:")

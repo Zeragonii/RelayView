@@ -6,3 +6,14 @@ build/
 dist/
 *.spec
 .DS_Store
+
+# Android / Gradle
+.gradle/
+android/.gradle/
+android/.idea/
+android/local.properties
+android/**/build/
+*.keystore
+*.jks
+*.apk
+android-update.json

@@ -1,4 +1,10 @@
-# RelayView v0.5.1 — libmpv middle-mouse panning fix
+# RelayView v0.5.1 — Windows and Android source integration
+
+> **NEW:** RelayView Android (Kotlin + Media3), sideloadable APK build and GitHub Actions release integration. Read [ANDROID.md](ANDROID.md) for setup, signing secrets, limitations and validation. The Android APK still needs a real GitHub Actions build and physical-device verification.
+
+## Windows release notes
+
+### v0.5.1 — libmpv middle-mouse panning fix
 
 **Status: Windows integration candidate — native rendering must be validated on a real machine before publishing to automatic-update users.**
 
