@@ -14,7 +14,7 @@ fun buildVersionCode(version: String): Int {
     return major * 1_000_000 + minor * 1_000 + patch
 }
 
-val relayVersion = providers.gradleProperty("relayviewVersion").orElse("0.5.1").get()
+val relayVersion = providers.gradleProperty("relayviewVersion").orElse("0.6.1").get()
 val releaseRepo = providers.gradleProperty("relayviewRepo").orElse("").get()
 require(releaseRepo.isEmpty() || Regex("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+").matches(releaseRepo))
 val signingPath = System.getenv("RELAYVIEW_KEYSTORE")

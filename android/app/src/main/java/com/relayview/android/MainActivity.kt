@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -20,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -40,6 +42,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -77,10 +82,29 @@ class MainActivity : ComponentActivity() {
                 var cameraDialog by remember { mutableStateOf(false) }
                 var showLayouts by remember { mutableStateOf(false) }
                 var showUpdates by remember { mutableStateOf(false) }
-                var fullscreen by remember { mutableStateOf<Int?>(null) }
-                var showList by remember { mutableStateOf(true) }
-                var muted by remember { mutableStateOf(true) }
-                var paused by remember { mutableStateOf(false) }
+                // These are small UI preferences, not persisted playlist data.
+                // Save them across Activity recreation (including orientation changes).
+                var fullscreen by rememberSaveable { mutableStateOf<Int?>(null) }
+                var showList by rememberSaveable { mutableStateOf(true) }
+                var muted by rememberSaveable { mutableStateOf(true) }
+                var paused by rememberSaveable { mutableStateOf(false) }
+                var cameraFilter by rememberSaveable { mutableStateOf("") }
+                var favouritesOnly by rememberSaveable { mutableStateOf(false) }
+
+                // Fullscreen means immersive video, not merely a 1x1 grid.
+                // Restore system bars on exit and when this Activity is disposed.
+                DisposableEffect(fullscreen) {
+                    val controller = WindowCompat.getInsetsController(window, window.decorView)
+                    if (fullscreen != null) {
+                        controller.systemBarsBehavior =
+                            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                        controller.hide(WindowInsetsCompat.Type.systemBars())
+                    } else {
+                        controller.show(WindowInsetsCompat.Type.systemBars())
+                    }
+                    onDispose { controller.show(WindowInsetsCompat.Type.systemBars()) }
+                }
+                BackHandler(enabled = fullscreen != null) { fullscreen = null }
 
                 fun notify(message: String) { Toast.makeText(context, message, Toast.LENGTH_LONG).show() }
                 val importPlaylist = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -119,6 +143,8 @@ class MainActivity : ComponentActivity() {
                 RelayScreen(
                     state = state, muted = muted, paused = paused, fullscreen = fullscreen,
                     showList = showList, onToggleList = { showList = !showList },
+                    cameraFilter = cameraFilter, onCameraFilter = { cameraFilter = it },
+                    favouritesOnly = favouritesOnly, onFavouritesOnly = { favouritesOnly = it },
                     onSelect = model::selectSlot, onAssign = model::assignCamera,
                     onGrid = model::chooseGrid, onSwap = model::swapSlots,
                     onFullscreen = { fullscreen = it }, onMute = { muted = !muted }, onPause = { paused = !paused },
@@ -168,6 +194,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun RelayScreen(
     state: RelayState, muted: Boolean, paused: Boolean, fullscreen: Int?, showList: Boolean,
+    cameraFilter: String, onCameraFilter: (String) -> Unit,
+    favouritesOnly: Boolean, onFavouritesOnly: (Boolean) -> Unit,
     onToggleList: () -> Unit, onSelect: (Int) -> Unit, onAssign: (String) -> Unit,
     onGrid: (Int, Int) -> Unit, onSwap: (Int, Int) -> Unit,
     onFullscreen: (Int?) -> Unit, onMute: () -> Unit, onPause: () -> Unit,
@@ -177,7 +205,7 @@ private fun RelayScreen(
 ) {
     var gridMenu by remember { mutableStateOf(false) }
     Scaffold(containerColor = background, topBar = {
-        Surface(color = pane) {
+        if (fullscreen == null) Surface(color = pane) {
             Row(Modifier.fillMaxWidth().height(58.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onToggleList) { Icon(Icons.Default.Menu, "Camera list") }
                 Text("RelayView", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), maxLines = 1)
@@ -200,10 +228,15 @@ private fun RelayScreen(
     }) { innerPadding ->
         BoxWithConstraints(Modifier.fillMaxSize().padding(innerPadding)) {
             val wide = maxWidth >= 700.dp
-            if (wide) {
+            if (fullscreen != null) {
+                // Completely hide the camera list and app toolbar in immersive mode.
+                GridViewer(Modifier.fillMaxSize(), state, fullscreen, muted, paused,
+                    onSelect, onFullscreen, onSwap)
+            } else if (wide) {
                 Row(Modifier.fillMaxSize()) {
                     if (showList) CameraSidebar(
                         Modifier.width(300.dp).fillMaxHeight(), state, onAssign,
+                        cameraFilter, onCameraFilter, favouritesOnly, onFavouritesOnly,
                         onImport, onExport, onAdd, onEdit, onFavourite, onMoveCamera,
                     )
                     GridViewer(Modifier.weight(1f).fillMaxHeight(), state, fullscreen, muted, paused,
@@ -213,6 +246,7 @@ private fun RelayScreen(
                 Column(Modifier.fillMaxSize()) {
                     if (showList) CameraSidebar(
                         Modifier.fillMaxWidth().weight(0.48f), state, onAssign,
+                        cameraFilter, onCameraFilter, favouritesOnly, onFavouritesOnly,
                         onImport, onExport, onAdd, onEdit, onFavourite, onMoveCamera,
                     )
                     GridViewer(Modifier.fillMaxWidth().weight(if (showList) 0.52f else 1f), state,
@@ -226,11 +260,11 @@ private fun RelayScreen(
 @Composable
 private fun CameraSidebar(
     modifier: Modifier, state: RelayState, onAssign: (String) -> Unit,
+    filter: String, onFilterChange: (String) -> Unit,
+    favouritesOnly: Boolean, onFavouritesOnly: (Boolean) -> Unit,
     onImport: () -> Unit, onExport: () -> Unit, onAdd: () -> Unit, onEdit: (Camera) -> Unit,
     onFavourite: (String) -> Unit, onMove: (String, Int) -> Unit,
 ) {
-    var filter by remember { mutableStateOf("") }
-    var favouritesOnly by remember { mutableStateOf(false) }
     Column(modifier.background(pane).padding(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Cameras", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
@@ -239,12 +273,12 @@ private fun CameraSidebar(
             IconButton(onClick = onAdd) { Icon(Icons.Default.AddCircle, "Add camera") }
         }
         OutlinedTextField(
-            value = filter, onValueChange = { filter = it },
+            value = filter, onValueChange = onFilterChange,
             label = { Text("Search cameras") }, singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(checked = favouritesOnly, onCheckedChange = { favouritesOnly = it })
+            Checkbox(checked = favouritesOnly, onCheckedChange = onFavouritesOnly)
             Text("Favourites only", style = MaterialTheme.typography.labelMedium)
             Spacer(Modifier.weight(1f))
             Text("Tile ${state.selectedSlot + 1}", color = accent, style = MaterialTheme.typography.labelMedium)
@@ -290,41 +324,53 @@ private fun GridViewer(
     onSelect: (Int) -> Unit, onFullscreen: (Int?) -> Unit, onSwap: (Int, Int) -> Unit,
 ) {
     val indexByUrl = state.cameras.associateBy { it.url }
-    var swapSource by remember { mutableStateOf<Int?>(null) }
-    Column(modifier.background(background).padding(4.dp)) {
-        Row(Modifier.fillMaxWidth().height(34.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(if (fullscreen == null) "LIVE GRID" else "FULLSCREEN", color = accent,
-                style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
-            if (fullscreen != null) TextButton(onClick = { onFullscreen(null) }) { Text("Exit fullscreen") }
-            else if (swapSource != null) Text("Swap: select another tile", color = accent, style = MaterialTheme.typography.labelSmall)
-        }
-        val rows = if (fullscreen == null) state.rows else 1
-        val columns = if (fullscreen == null) state.columns else 1
-        Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            repeat(rows) { row ->
-                Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    repeat(columns) { column ->
-                        val index = fullscreen ?: row * columns + column
-                        val camera = indexByUrl[state.slots.getOrNull(index)]
-                        key(index, camera?.url) {
-                            CameraTile(
-                                modifier = Modifier.weight(1f).fillMaxHeight(), camera = camera,
-                                index = index, selected = index == state.selectedSlot,
-                                muted = muted, paused = paused,
-                                preferSubstream = fullscreen == null && state.rows * state.columns > 1,
-                                compact = fullscreen == null && state.rows * state.columns > 1,
-                                onSelect = {
-                                    if (swapSource != null && swapSource != index) {
-                                        onSwap(swapSource!!, index); swapSource = null
-                                    } else onSelect(index)
-                                },
-                                onFullscreen = { onFullscreen(if (fullscreen == index) null else index) },
-                                onSwap = { swapSource = if (swapSource == index) null else index },
-                            )
+    var swapSource by rememberSaveable { mutableStateOf<Int?>(null) }
+    Box(modifier.background(background).padding(if (fullscreen == null) 4.dp else 0.dp)) {
+        Column(Modifier.fillMaxSize()) {
+            if (fullscreen == null) {
+                Row(Modifier.fillMaxWidth().height(34.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("LIVE GRID", color = accent, style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.weight(1f))
+                    if (swapSource != null) Text("Swap: select another tile", color = accent,
+                        style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            val rows = if (fullscreen == null) state.rows else 1
+            val columns = if (fullscreen == null) state.columns else 1
+            Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                repeat(rows) { row ->
+                    Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        repeat(columns) { column ->
+                            val index = fullscreen ?: row * columns + column
+                            val camera = indexByUrl[state.slots.getOrNull(index)]
+                            key(index, camera?.url) {
+                                CameraTile(
+                                    modifier = Modifier.weight(1f).fillMaxHeight(), camera = camera,
+                                    index = index, selected = index == state.selectedSlot,
+                                    muted = muted, paused = paused,
+                                    preferSubstream = fullscreen == null && state.rows * state.columns > 1,
+                                    compact = fullscreen == null && state.rows * state.columns > 1,
+                                    isFullscreen = fullscreen != null,
+                                    onSelect = {
+                                        if (swapSource != null && swapSource != index) {
+                                            onSwap(swapSource!!, index); swapSource = null
+                                        } else onSelect(index)
+                                    },
+                                    onFullscreen = { onFullscreen(if (fullscreen == index) null else index) },
+                                    onSwap = { swapSource = if (swapSource == index) null else index },
+                                )
+                            }
                         }
                     }
                 }
             }
+        }
+        if (fullscreen != null) {
+            // Always-visible escape hatch for touch devices and Android TV remotes.
+            FilledTonalIconButton(
+                onClick = { onFullscreen(null) },
+                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+            ) { Icon(Icons.Default.FullscreenExit, contentDescription = "Exit fullscreen") }
         }
     }
 }
@@ -333,13 +379,13 @@ private fun GridViewer(
 @Composable
 private fun CameraTile(
     modifier: Modifier, camera: Camera?, index: Int, selected: Boolean, muted: Boolean, paused: Boolean,
-    preferSubstream: Boolean, compact: Boolean,
+    preferSubstream: Boolean, compact: Boolean, isFullscreen: Boolean,
     onSelect: () -> Unit, onFullscreen: () -> Unit, onSwap: () -> Unit,
 ) {
     val low = camera?.attrs?.get("relayview-substream").orEmpty()
     val streamUrl = if (preferSubstream && (low.startsWith("rtsp://", true) ||
         low.startsWith("http://", true) || low.startsWith("https://", true))) low else camera?.url
-    var zoom by remember(streamUrl) { mutableFloatStateOf(1f) }
+    var zoom by rememberSaveable(streamUrl) { mutableFloatStateOf(1f) }
     var offset by remember(streamUrl) { mutableStateOf(Offset.Zero) }
     var status by remember(streamUrl) { mutableStateOf("No camera") }
     var retries by remember(streamUrl) { mutableIntStateOf(0) }
@@ -479,7 +525,8 @@ private fun CameraTile(
                 SmallIcon(Icons.Default.KeyboardArrowUp, "Pan up", { offset += Offset(0f, 32f) })
                 SmallIcon(Icons.Default.KeyboardArrowDown, "Pan down", { offset += Offset(0f, -32f) })
             }
-            SmallIcon(Icons.Default.Fullscreen, "Fullscreen", onFullscreen)
+            SmallIcon(if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                if (isFullscreen) "Exit fullscreen" else "Fullscreen", onFullscreen)
         }
     }
 }
