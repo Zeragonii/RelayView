@@ -34,6 +34,16 @@ def test_camera_sidebar_filters_hoisted_out_of_orientation_branches():
 
 def test_release_version_matches_android_fallback_and_python_package():
     version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
-    assert version == "0.6.1"
+    assert version == "0.6.2"
     assert f'orElse("{version}")' in (ROOT / "android/app/build.gradle.kts").read_text()
     assert f'__version__ = "{version}"' in (ROOT / "relayview/__init__.py").read_text()
+
+
+def test_edge_to_edge_insets_safe_in_normal_mode_and_immersive_in_fullscreen():
+    """Guard against Android 15+ overlap with status/navigation bars and cutouts."""
+    assert "WindowCompat.setDecorFitsSystemWindows(window, false)" in MAIN
+    assert "isAppearanceLightStatusBars = false" in MAIN
+    assert "isAppearanceLightNavigationBars = false" in MAIN
+    assert "if (fullscreen == null) Modifier.safeDrawingPadding() else Modifier" in MAIN
+    assert re.search(r"contentWindowInsets\s*=\s*WindowInsets\(0,\s*0,\s*0,\s*0\)", MAIN)
+    assert ".background(background)" in MAIN

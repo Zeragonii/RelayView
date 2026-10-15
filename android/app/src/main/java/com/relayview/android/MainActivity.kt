@@ -71,6 +71,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Android 15+ enforces edge-to-edge for targetSdk 35. Use the same
+        // window behaviour on older devices, then handle safe drawing insets
+        // explicitly in Compose instead of relying on OEM-specific defaults.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
+        }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = accent, surface = pane, background = background)) {
@@ -204,28 +212,41 @@ private fun RelayScreen(
     onLayouts: () -> Unit, onUpdates: () -> Unit, updateAvailable: Boolean,
 ) {
     var gridMenu by remember { mutableStateOf(false) }
-    Scaffold(containerColor = background, topBar = {
-        if (fullscreen == null) Surface(color = pane) {
-            Row(Modifier.fillMaxWidth().height(58.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onToggleList) { Icon(Icons.Default.Menu, "Camera list") }
-                Text("RelayView", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), maxLines = 1)
-                Box {
-                    TextButton(onClick = { gridMenu = true }) { Text("${state.rows}×${state.columns}") }
-                    DropdownMenu(expanded = gridMenu, onDismissRequest = { gridMenu = false }) {
-                        listOf(1 to 1, 1 to 2, 2 to 2, 3 to 3, 4 to 4).forEach { (r, c) ->
-                            DropdownMenuItem(text = { Text("${r}×${c}") }, onClick = { onGrid(r, c); onFullscreen(null); gridMenu = false })
+    Scaffold(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(background)
+            // The normal camera UI must avoid status/navigation bars and cutouts,
+            // including landscape side insets. Immersive fullscreen intentionally
+            // fills the display, with system bars hidden by MainActivity.
+            .then(if (fullscreen == null) Modifier.safeDrawingPadding() else Modifier),
+        // Insets are applied once to the whole normal screen, including our
+        // custom toolbar. Scaffold's default insets must not pad it a second time.
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        containerColor = background,
+        topBar = {
+            if (fullscreen == null) Surface(color = pane) {
+                Row(Modifier.fillMaxWidth().height(58.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onToggleList) { Icon(Icons.Default.Menu, "Camera list") }
+                    Text("RelayView", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), maxLines = 1)
+                    Box {
+                        TextButton(onClick = { gridMenu = true }) { Text("${state.rows}×${state.columns}") }
+                        DropdownMenu(expanded = gridMenu, onDismissRequest = { gridMenu = false }) {
+                            listOf(1 to 1, 1 to 2, 2 to 2, 3 to 3, 4 to 4).forEach { (r, c) ->
+                                DropdownMenuItem(text = { Text("${r}×${c}") }, onClick = { onGrid(r, c); onFullscreen(null); gridMenu = false })
+                            }
                         }
                     }
-                }
-                IconButton(onClick = onMute) { Icon(if (muted) Icons.Default.VolumeOff else Icons.Default.VolumeUp, "Mute all") }
-                IconButton(onClick = onPause) { Icon(if (paused) Icons.Default.PlayArrow else Icons.Default.Pause, "Pause all") }
-                IconButton(onClick = onLayouts) { Icon(Icons.Default.GridView, "Saved layouts") }
-                BadgedBox(badge = { if (updateAvailable) Badge() }) {
-                    IconButton(onClick = onUpdates) { Icon(Icons.Default.SystemUpdate, "Updates") }
+                    IconButton(onClick = onMute) { Icon(if (muted) Icons.Default.VolumeOff else Icons.Default.VolumeUp, "Mute all") }
+                    IconButton(onClick = onPause) { Icon(if (paused) Icons.Default.PlayArrow else Icons.Default.Pause, "Pause all") }
+                    IconButton(onClick = onLayouts) { Icon(Icons.Default.GridView, "Saved layouts") }
+                    BadgedBox(badge = { if (updateAvailable) Badge() }) {
+                        IconButton(onClick = onUpdates) { Icon(Icons.Default.SystemUpdate, "Updates") }
+                    }
                 }
             }
-        }
-    }) { innerPadding ->
+        },
+    ) { innerPadding ->
         BoxWithConstraints(Modifier.fillMaxSize().padding(innerPadding)) {
             val wide = maxWidth >= 700.dp
             if (fullscreen != null) {
