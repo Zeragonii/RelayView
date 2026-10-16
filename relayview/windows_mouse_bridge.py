@@ -53,6 +53,10 @@ if sys.platform == 'win32':
             self._pan_origin = None
             self._pan_center = None
             self._wheel_remainder = 0
+            # WH_MOUSE_LL callbacks must return promptly: doing zoom/IPC work
+            # inside them can make Windows silently remove the mouse hook.
+            self._pending_wheels = []
+            self._wheel_dispatch_scheduled = False
 
             self._user32 = ctypes.windll.user32
             user32 = self._user32
@@ -88,6 +92,8 @@ if sys.platform == 'win32':
         def close(self):
             self._pan_timer.stop()
             self._clear_pan()
+            self._pending_wheels.clear()
+            self._wheel_dispatch_scheduled = False
             if self._hook:
                 self._user32.UnhookWindowsHookEx(self._hook)
                 self._hook = None
@@ -167,27 +173,45 @@ if sys.platform == 'win32':
             tile._update_zoom()
             log.debug('Middle pan update tile=%s center=(%.4f, %.4f)', tile.index, cx, cy)
 
+        def _dispatch_wheels(self):
+            """Apply captured wheel events on the regular Qt event loop.
+
+            Calling tile.zoom_by() in WH_MOUSE_LL risks Windows silently
+            removing the hook if the callback exceeds LowLevelHooksTimeout.
+            """
+            self._wheel_dispatch_scheduled = False
+            events, self._pending_wheels = self._pending_wheels, []
+            for tile, steps in events:
+                if tile in self.grid.tiles and tile.stream and tile.isVisible():
+                    log.info('Native wheel zoom tile=%s steps=%s', tile.index, steps)
+                    tile.zoom_by(steps)
+
         def _callback(self, code, wparam, lparam):
             if code >= 0 and wparam == WM_MOUSEWHEEL:
                 try:
-                    info = ctypes.cast(lparam, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents
                     if self._active():
-                        from PySide6.QtCore import QPoint
-                        tile = self._tile_at(QPoint(info.pt.x, info.pt.y))
+                        # WH_MOUSE_LL supplies raw Windows screen pixels while
+                        # Qt mapFromGlobal expects *Qt logical* screen points.
+                        # QCursor.pos() uses the same coordinate system as Qt,
+                        # including when Windows display scaling isn't 100%.
+                        tile = self._tile_at(QCursor.pos())
                         if tile is not None:
+                            info = ctypes.cast(lparam, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents
                             signed_delta = ctypes.c_short((int(info.mouseData) >> 16) & 0xffff).value
                             self._wheel_remainder += signed_delta
                             steps = int(self._wheel_remainder / 120)
                             self._wheel_remainder -= steps * 120
                             if steps:
-                                log.debug('Native wheel tile=%s steps=%s', tile.index, steps)
-                                tile.zoom_by(steps)
-                            return 1
-                    else:
-                        self._wheel_remainder = 0
+                                self._pending_wheels.append((tile, steps))
+                                if not self._wheel_dispatch_scheduled:
+                                    self._wheel_dispatch_scheduled = True
+                                    QTimer.singleShot(0, self._dispatch_wheels)
+                            return 1  # Suppress original wheel event; no double zoom.
+                    self._wheel_remainder = 0
                 except Exception:
                     log.exception('Native wheel input failed')
             return self._user32.CallNextHookEx(self._hook, code, wparam, lparam)
+
 else:
     class WindowsMouseBridge:
         def __init__(self, grid):

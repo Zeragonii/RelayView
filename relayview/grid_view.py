@@ -238,9 +238,14 @@ class GridTile(QFrame):
             self._update_zoom()
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
-        if (obj is getattr(self, "video", None) and event.type() == QEvent.Type.Wheel
-                and not sys.platform.startswith("win")):
-            self.zoom_by(1 if event.angleDelta().y() > 0 else -1)
+        # Normally the Windows hook consumes wheel messages before Qt sees
+        # them. If the hook is unavailable (security policy, timeout, etc.),
+        # accept Qt-delivered wheel events as a fallback on every platform.
+        if obj is getattr(self, "video", None) and event.type() == QEvent.Type.Wheel:
+            delta = event.angleDelta().y()
+            if delta:
+                self.zoom_by(1 if delta > 0 else -1)
+            event.accept()
             return True
         return super().eventFilter(obj, event)
 
