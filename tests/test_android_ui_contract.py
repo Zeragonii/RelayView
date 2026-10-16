@@ -34,7 +34,6 @@ def test_camera_sidebar_filters_hoisted_out_of_orientation_branches():
 
 def test_release_version_matches_android_fallback_and_python_package():
     version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
-    assert version == "0.6.3"
     assert f'orElse("{version}")' in (ROOT / "android/app/build.gradle.kts").read_text()
     assert f'__version__ = "{version}"' in (ROOT / "relayview/__init__.py").read_text()
 

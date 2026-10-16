@@ -33,6 +33,7 @@ from .grid_profiles import validate_profile, resolve_assignments
 from .playlist import load_m3u
 from .playlist_editor import PlaylistEditorDialog
 from .mpv_backend import MPVBackend
+from .single_view_zoom import SingleViewZoom
 from .updater import UpdateCheckThread, UpdateDownloadThread, handoff_update_and_restart
 from . import __version__
 from .diagnostics import diagnostic_summary
@@ -197,9 +198,17 @@ class MainWindow(QMainWindow):
         self.video_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.video_frame.setToolTip("Double-click for fullscreen")
         self.video_frame.installEventFilter(self)
+        self.single_zoom = SingleViewZoom(
+            self.video_frame,
+            self.backend.primary if self.backend else None,
+            lambda: self.streams[self.current_index]
+            if 0 <= self.current_index < len(self.streams) else None,
+            lambda: self._view_mode == "single",
+        )
         self.viewer_stack.addWidget(self.video_frame)
 
         self.grid_view = GridView(self.backend)
+        self.grid_view._native_mouse.set_single_view_target(self.single_zoom)
         grid_rows = max(1, self.settings.value("grid_rows", 2, type=int))
         grid_columns = max(1, self.settings.value("grid_columns", 2, type=int))
         self.grid_view.configure(grid_rows, grid_columns, [])
@@ -290,9 +299,18 @@ class MainWindow(QMainWindow):
             self._shortcuts.append(shortcut)
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt API
-        if watched is self.video_frame and event.type() == QEvent.Type.MouseButtonDblClick:
-            self.toggle_fullscreen()
-            return True
+        if watched is self.video_frame:
+            if event.type() == QEvent.Type.Wheel and self.single_zoom.stream:
+                # Qt fallback for systems where the native wheel hook cannot
+                # install. The hook normally suppresses the original event.
+                delta = event.angleDelta().y()
+                if delta:
+                    self.single_zoom.zoom_by(1 if delta > 0 else -1)
+                event.accept()
+                return True
+            if event.type() == QEvent.Type.MouseButtonDblClick:
+                self.toggle_fullscreen()
+                return True
         return super().eventFilter(watched, event)
 
     def _show_menu(self) -> None:
@@ -516,6 +534,8 @@ class MainWindow(QMainWindow):
         self.stream_title.setText(stream.name)
         self.status_text.setText("Connecting…")
         self.status_badge.setText("Connecting")
+        # A different camera begins at 1x, just like a newly assigned grid tile.
+        self.single_zoom.reset_zoom()
         self.backend.play(stream.url)
         self.pause_btn.setEnabled(True)
         self.mute_btn.setEnabled(True)
@@ -749,6 +769,7 @@ class MainWindow(QMainWindow):
             self.status_badge.setText("Connecting")
             log.debug("Transition grid->single: reattaching primary video host hwnd=%s", int(self.video_frame.winId()))
             self.backend.attach_video(int(self.video_frame.winId()))
+            self.single_zoom.reset_zoom()
             self.backend.play(stream.url)
             self.pause_btn.setEnabled(True)
             self.mute_btn.setEnabled(True)

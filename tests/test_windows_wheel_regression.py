@@ -18,7 +18,7 @@ def _load_real_wheel_methods(fake_cursor, scheduled):
                and any(isinstance(x, ast.ClassDef) and x.name == 'WindowsMouseBridge' for x in node.body))
     bridge = next(x for x in win.body if isinstance(x, ast.ClassDef) and x.name == 'WindowsMouseBridge')
     methods = [x for x in bridge.body if isinstance(x, ast.FunctionDef)
-               and x.name in ('_callback', '_dispatch_wheels')]
+               and x.name in ('_callback', '_dispatch_wheels', '_valid_target', '_tile_at')]
     new_class = ast.ClassDef(name='TestableBridge', bases=[], keywords=[], body=methods, decorator_list=[])
     module = ast.fix_missing_locations(ast.Module(body=[new_class], type_ignores=[]))
 
@@ -73,6 +73,7 @@ def test_wheel_uses_qt_coordinates_and_deferred_dispatch():
     bridge._active = lambda: True
     bridge._tile_at = lambda position: tile if position is qt_cursor_position else None
     bridge.grid = SimpleNamespace(tiles=[tile])
+    bridge.single_target = None
     bridge._wheel_remainder = 0
     bridge._pending_wheels = []
     bridge._wheel_dispatch_scheduled = False
@@ -109,3 +110,59 @@ def test_qt_fallback_is_available_on_windows():
     assert 'obj is getattr(self, "video", None) and event.type() == QEvent.Type.Wheel:' in source
     assert 'event.accept()' in source
     assert 'and not sys.platform.startswith("win")):' not in source.split('def eventFilter')[1].split('def wheelEvent')[0]
+
+
+def test_native_wheel_zoom_routes_to_single_camera_when_grid_hidden():
+    """Real wheel callback + queued dispatch with a registered primary target."""
+    cursor = object()
+    scheduled = []
+    Bridge = _load_real_wheel_methods(cursor, scheduled)
+    zoom_calls = []
+    single = SimpleNamespace(index=-1, stream=object(),
+                             isVisible=lambda: True,
+                             zoom_by=lambda steps: zoom_calls.append(steps))
+    bridge = Bridge()
+    bridge.grid = SimpleNamespace(tiles=[], isVisible=lambda: False)
+    bridge.single_target = single
+    bridge._active = lambda: True
+    bridge._tile_at = lambda pos: single if pos is cursor else None
+    bridge._wheel_remainder = 0
+    bridge._pending_wheels = []
+    bridge._wheel_dispatch_scheduled = False
+    bridge._hook = "hook"
+    bridge._user32 = SimpleNamespace(CallNextHookEx=lambda *args: 0)
+
+    assert bridge._callback(0, 0x020A, SimpleNamespace(mouseData=120 << 16)) == 1
+    assert not zoom_calls
+    scheduled.pop()()
+    assert zoom_calls == [1]
+
+
+def test_native_hit_testing_selects_only_visible_view_and_checks_video_rect():
+    Bridge = _load_real_wheel_methods(object(), [])
+    class Rect:
+        def contains(self, pos):
+            return pos == "inside"
+    video = SimpleNamespace(isVisible=lambda: True,
+                            mapFromGlobal=lambda pos: pos,
+                            rect=lambda: Rect())
+    single = SimpleNamespace(stream=object(), video=video,
+                             isVisible=lambda: True)
+    tile = SimpleNamespace(stream=object(), video=video,
+                           isVisible=lambda: True)
+    bridge = Bridge()
+    state = [False]
+    bridge.grid = SimpleNamespace(tiles=[tile], isVisible=lambda: state[0])
+    bridge.single_target = single
+
+    assert bridge._tile_at("inside") is single
+    assert bridge._tile_at("outside") is None
+    state[0] = True
+    assert bridge._tile_at("inside") is tile
+
+
+def test_single_view_wheel_fallback_registered_on_native_video_frame():
+    source = (SOURCE.parent / "main_window.py").read_text(encoding="utf-8")
+    assert 'self.grid_view._native_mouse.set_single_view_target(self.single_zoom)' in source
+    assert 'event.type() == QEvent.Type.Wheel and self.single_zoom.stream' in source
+    assert 'self.single_zoom.zoom_by(1 if delta > 0 else -1)' in source

@@ -42,7 +42,7 @@ def _load_real_poll_methods(cursor):
                and any(isinstance(x, ast.ClassDef) and x.name == 'WindowsMouseBridge' for x in node.body))
     win_class = next(x for x in win.body if isinstance(x, ast.ClassDef) and x.name == 'WindowsMouseBridge')
     methods = [x for x in win_class.body if isinstance(x, ast.FunctionDef)
-               and x.name in ('_poll_pan', '_apply_pan', '_clear_pan')]
+               and x.name in ('_poll_pan', '_apply_pan', '_clear_pan', '_valid_target')]
     klass = ast.ClassDef(name='RealPanPoll', bases=[], keywords=[], body=methods, decorator_list=[])
     module = ast.fix_missing_locations(ast.Module(body=[klass], type_ignores=[]))
 
@@ -103,6 +103,7 @@ def test_actual_middle_pan_poll_starts_moves_and_stays_after_release():
     bridge._user32 = Native()
     bridge._pan_tile = bridge._pan_origin = bridge._pan_center = None
     bridge.grid = type('Grid', (), {'tiles': [tile]})()
+    bridge.single_target = None
     bridge._active = lambda: True
     bridge._tile_at = lambda _: tile
 

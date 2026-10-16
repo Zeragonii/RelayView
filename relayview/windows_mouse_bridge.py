@@ -48,6 +48,7 @@ if sys.platform == 'win32':
         def __init__(self, grid):
             super().__init__(grid)
             self.grid = grid
+            self.single_target = None
             self._hook = None
             self._pan_tile = None
             self._pan_origin = None
@@ -89,6 +90,11 @@ if sys.platform == 'win32':
             if app:
                 app.aboutToQuit.connect(self.close)
 
+        def set_single_view_target(self, target):
+            # A single hook services both the native grid HWNDs and the
+            # primary single-view HWND. Only one is visible at a time.
+            self.single_target = target
+
         def close(self):
             self._pan_timer.stop()
             self._clear_pan()
@@ -101,20 +107,31 @@ if sys.platform == 'win32':
                 log.debug('Native wheel hook removed')
 
         def _active(self):
-            if not self.grid.isVisible():
+            single = self.single_target
+            if not self.grid.isVisible() and not (single and single.isVisible()):
                 return False
             foreground = self._user32.GetForegroundWindow()
             own_root = self._user32.GetAncestor(int(self.grid.window().winId()), GA_ROOT)
             return bool(foreground and own_root and foreground == own_root)
 
         def _tile_at(self, global_pos):
-            for tile in self.grid.tiles:
+            # Hidden grid tiles are never targets while the primary camera is
+            # active, even when their last assigned streams remain in memory.
+            if self.grid.isVisible():
+                targets = self.grid.tiles
+            else:
+                targets = [self.single_target] if self.single_target else []
+            for tile in targets:
                 if tile.stream is None or not tile.isVisible() or not tile.video.isVisible():
                     continue
                 local = tile.video.mapFromGlobal(global_pos)
                 if tile.video.rect().contains(local):
                     return tile
             return None
+
+        def _valid_target(self, tile):
+            return bool((tile in self.grid.tiles or tile is self.single_target)
+                        and tile.stream and tile.isVisible())
 
         def _clear_pan(self):
             self._pan_tile = None
@@ -157,8 +174,7 @@ if sys.platform == 'win32':
                 self._clear_pan()
 
         def _apply_pan(self, tile, global_pos):
-            if (tile not in self.grid.tiles or not tile.isVisible()
-                    or not tile.stream or tile.zoom.factor <= 1):
+            if not self._valid_target(tile) or tile.zoom.factor <= 1:
                 self._clear_pan()
                 return
             cx, cy = anchored_pan_center(
@@ -182,7 +198,7 @@ if sys.platform == 'win32':
             self._wheel_dispatch_scheduled = False
             events, self._pending_wheels = self._pending_wheels, []
             for tile, steps in events:
-                if tile in self.grid.tiles and tile.stream and tile.isVisible():
+                if self._valid_target(tile):
                     log.info('Native wheel zoom tile=%s steps=%s', tile.index, steps)
                     tile.zoom_by(steps)
 
@@ -216,6 +232,10 @@ else:
     class WindowsMouseBridge:
         def __init__(self, grid):
             self.grid = grid
+            self.single_target = None
+
+        def set_single_view_target(self, target):
+            self.single_target = target
 
         def close(self):
             pass
