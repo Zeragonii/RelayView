@@ -11,6 +11,7 @@ services:
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./passwordfile:/mosquitto/config/passwordfile:ro
+      - ./mosquitto.acl:/mosquitto/config/acl:ro
       - mqtt-data:/mosquitto/data
 volumes:
   mqtt-data:
