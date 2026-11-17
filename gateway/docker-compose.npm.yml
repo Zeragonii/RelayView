@@ -1,0 +1,12 @@
+# Optional override for Nginx Proxy Manager deployed in another Compose stack.
+# First create the external network: docker network create relayview-proxy
+# Add *the same network* to NPM's persistent Compose configuration.
+services:
+  relayview-gateway:
+    networks:
+      - default
+      - npm-proxy
+networks:
+  npm-proxy:
+    external: true
+    name: ${RELAYVIEW_PROXY_NETWORK:-relayview-proxy}
