@@ -29,6 +29,17 @@ The gateway **never** opens a second video stream.
    to an appropriate persistent Docker network, and proxy to
    `http://relayview-gateway:8080`. Do not expose the raw HTTP port to the
    internet. Both the playlist and PTZ API require a bearer token.
+   To connect an NPM container reliably across updates, create a dedicated
+   external network and add it to **both** the NPM and gateway Compose files:
+   ```sh
+   docker network create relayview-proxy
+   docker compose --env-file gateway/.env \
+     -f gateway/docker-compose.yml \
+     -f gateway/docker-compose.npm.yml up -d --build
+   ```
+   In NPM's own stack declare the same `relayview-proxy` external network.
+   Create a Proxy Host forwarding to `relayview-gateway` port `8080`, enable
+   HTTPS and Force SSL. This network membership survives stack redeployment.
 5. Configure the gateway HTTPS URL and API token on each RelayView device.
    Use **Pull** to replace its local playlist or **Push** to replace the master
    when desired. Edits are local until pushed—there is no surprise overwrite.
