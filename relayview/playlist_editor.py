@@ -103,6 +103,12 @@ class PlaylistEditorDialog(QDialog):
         self.url_edit.textEdited.connect(self._field_changed)
         form.addRow("Stream URL", self.url_edit)
 
+        self.ptz_camera_edit = QLineEdit()
+        self.ptz_camera_edit.setObjectName("playlistEditorFrigatePtzCamera")
+        self.ptz_camera_edit.setPlaceholderText("front_door  (Frigate cameras: ID)")
+        self.ptz_camera_edit.textEdited.connect(self._field_changed)
+        form.addRow("Frigate PTZ camera ID", self.ptz_camera_edit)
+
         self.favorite_check = QCheckBox("Favourite")
         self.favorite_check.toggled.connect(self._field_changed)
         form.addRow("", self.favorite_check)
@@ -187,19 +193,21 @@ class PlaylistEditorDialog(QDialog):
         self._loading_fields = True
         enabled = 0 <= row < len(self.streams)
         self.remove_button.setEnabled(enabled)
-        for widget in (self.name_edit, self.group_edit, self.url_edit, self.favorite_check, self.notes_edit):
+        for widget in (self.name_edit, self.group_edit, self.url_edit, self.ptz_camera_edit, self.favorite_check, self.notes_edit):
             widget.setEnabled(enabled)
         if enabled:
             stream = self.streams[row]
             self.name_edit.setText(stream.name)
             self.group_edit.setText(stream.group)
             self.url_edit.setText(stream.url)
+            self.ptz_camera_edit.setText(stream.attrs.get("relayview-ptz-camera", ""))
             self.favorite_check.setChecked(stream.favorite)
             self.notes_edit.setPlainText(stream.notes)
         else:
             self.name_edit.clear()
             self.group_edit.clear()
             self.url_edit.clear()
+            self.ptz_camera_edit.clear()
             self.favorite_check.setChecked(False)
             self.notes_edit.clear()
         self._loading_fields = False
@@ -211,6 +219,12 @@ class PlaylistEditorDialog(QDialog):
         if not (0 <= row < len(self.streams)):
             return
         old = self.streams[row]
+        attrs = dict(old.attrs)
+        ptz = self.ptz_camera_edit.text().strip()
+        if ptz:
+            attrs["relayview-ptz-camera"] = ptz
+        else:
+            attrs.pop("relayview-ptz-camera", None)
         updated = replace(
             old,
             name=self.name_edit.text().strip(),
@@ -218,6 +232,7 @@ class PlaylistEditorDialog(QDialog):
             url=self.url_edit.text().strip(),
             favorite=self.favorite_check.isChecked(),
             notes=self.notes_edit.toPlainText().strip(),
+            attrs=attrs,
         )
         self.streams[row] = updated
         item = self.list_widget.item(row)
@@ -238,6 +253,7 @@ class PlaylistEditorDialog(QDialog):
         self._load_row(self.list_widget.currentRow())
 
     def _validate(self) -> bool:
+        import re
         if not self.streams:
             QMessageBox.warning(self, "Nothing to save", "The playlist contains no streams.")
             return False
@@ -247,6 +263,11 @@ class PlaylistEditorDialog(QDialog):
                 return False
             if not stream.url.strip():
                 QMessageBox.warning(self, "Missing URL", f"{stream.name} has no stream URL.")
+                return False
+            ptz = stream.attrs.get("relayview-ptz-camera", "")
+            if ptz and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", ptz):
+                QMessageBox.warning(self, "Invalid Frigate camera ID",
+                    "Use the Frigate camera key (letters, numbers, hyphens, underscores).")
                 return False
         return True
 
