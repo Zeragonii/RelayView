@@ -234,6 +234,7 @@ private fun RelayScreen(
     onPtz: (Camera) -> Unit, updateAvailable: Boolean,
 ) {
     var gridMenu by remember { mutableStateOf(false) }
+    var toolsMenu by remember { mutableStateOf(false) }
     Scaffold(
         modifier = Modifier
             .fillMaxSize()
@@ -261,15 +262,25 @@ private fun RelayScreen(
                     }
                     IconButton(onClick = onMute) { Icon(if (muted) Icons.Default.VolumeOff else Icons.Default.VolumeUp, "Mute all") }
                     IconButton(onClick = onPause) { Icon(if (paused) Icons.Default.PlayArrow else Icons.Default.Pause, "Pause all") }
-                    IconButton(onClick = onLayouts) { Icon(Icons.Default.GridView, "Saved layouts") }
-                    IconButton(onClick = onGateway) { Icon(Icons.Default.CloudSync, "Gateway / master playlist") }
                     val selectedCamera = state.cameras.firstOrNull {
                         it.url == state.slots.getOrNull(state.selectedSlot)
                     }
-                    IconButton(
-                        enabled = !selectedCamera?.attrs?.get("relayview-ptz-camera").isNullOrBlank(),
-                        onClick = { selectedCamera?.let(onPtz) },
-                    ) { Icon(Icons.Default.ControlCamera, "Physical PTZ") }
+                    Box {
+                        IconButton(onClick = { toolsMenu = true }) {
+                            Icon(Icons.Default.MoreVert, "Layouts, gateway and PTZ tools")
+                        }
+                        DropdownMenu(expanded = toolsMenu, onDismissRequest = { toolsMenu = false }) {
+                            DropdownMenuItem(text = { Text("Saved layouts") },
+                                onClick = { toolsMenu = false; onLayouts() })
+                            DropdownMenuItem(text = { Text("Gateway / master playlist") },
+                                onClick = { toolsMenu = false; onGateway() })
+                            DropdownMenuItem(
+                                text = { Text("Physical PTZ") },
+                                enabled = !selectedCamera?.attrs?.get("relayview-ptz-camera").isNullOrBlank(),
+                                onClick = { toolsMenu = false; selectedCamera?.let(onPtz) },
+                            )
+                        }
+                    }
                     BadgedBox(badge = { if (updateAvailable) Badge() }) {
                         IconButton(onClick = onUpdates) { Icon(Icons.Default.SystemUpdate, "Updates") }
                     }
@@ -677,7 +688,9 @@ private fun CameraEditDialog(camera: Camera?, onDismiss: () -> Unit, onSave: (Ca
                 if (onRemove != null) TextButton(onClick = onRemove) { Text("Delete camera", color = MaterialTheme.colorScheme.error) }
             }
         },
-        confirmButton = { TextButton(onClick = {
+        confirmButton = { TextButton(
+            enabled = frigateCamera.isBlank() || Regex("[A-Za-z0-9_-]{1,64}").matches(frigateCamera.trim()),
+            onClick = {
             val attrs = (camera?.attrs ?: emptyMap()).toMutableMap()
             if (substream.isBlank()) attrs.remove("relayview-substream")
             else attrs["relayview-substream"] = substream.trim()
