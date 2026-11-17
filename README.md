@@ -1,3 +1,14 @@
+## RelayView Gateway (v0.7.0)
+
+A companion Docker service adds **physical PTZ via Frigate MQTT** and an
+authenticated **master M3U playlist** shared by Windows and Android, without
+changing the go2rtc video streams. Devices can explicitly **Pull** the master
+or **Push** their local cameras. Camera PTZ mappings use
+`relayview-ptz-camera="<Frigate camera ID>"` in the M3U EXTINF attributes.
+
+See [gateway/README.md](gateway/README.md) for Docker, MQTT, Nginx Proxy
+Manager, token setup, endpoints, security and live testing instructions.
+
 # RelayView v0.5.1 — Windows and Android source integration
 
 > **NEW:** RelayView Android (Kotlin + Media3), sideloadable APK build and GitHub Actions release integration. Read [ANDROID.md](ANDROID.md) for setup, signing secrets, limitations and validation. The Android APK still needs a real GitHub Actions build and physical-device verification.
