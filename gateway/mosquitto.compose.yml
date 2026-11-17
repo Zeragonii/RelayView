@@ -1,0 +1,16 @@
+# Optional separate broker: the simplest choice is to point the gateway at
+# the *existing* broker already used by Frigate/Home Assistant/Zigbee2MQTT.
+# If deploying this one, create a passwordfile (see gateway/README.md), and
+# connect Frigate to the host's port 1883.
+services:
+  mqtt:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./passwordfile:/mosquitto/config/passwordfile:ro
+      - mqtt-data:/mosquitto/data
+volumes:
+  mqtt-data:
