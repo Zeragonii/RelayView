@@ -446,7 +446,7 @@ private fun CameraTile(
         val frameListener = VideoFrameMetadataListener { _, _, _, _ ->
             lastFrameMs.set(android.os.SystemClock.elapsedRealtime())
         }
-        player?.addVideoFrameMetadataListener(frameListener)
+        player?.setVideoFrameMetadataListener(frameListener)
 
         fun recover(reason: String) {
             if (player == null || pendingRetry?.isActive == true || currentPaused) return
@@ -543,7 +543,7 @@ private fun CameraTile(
             watchdog.cancel()
             pendingRetry?.cancel()
             player?.removeListener(listener)
-            player?.removeVideoFrameMetadataListener(frameListener)
+            player?.clearVideoFrameMetadataListener(frameListener)
             player?.release()
         }
     }
