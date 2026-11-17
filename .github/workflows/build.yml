@@ -27,6 +27,18 @@ jobs:
       - name: Run parser tests
         run: pytest -q
 
+  gateway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install gateway dependencies
+        run: pip install -r gateway/requirements.txt pytest httpx
+      - name: Test gateway (playlist / PTZ / MQTT)
+        run: python -m pytest -q gateway/tests
+
   windows:
     needs: test
     runs-on: windows-latest
