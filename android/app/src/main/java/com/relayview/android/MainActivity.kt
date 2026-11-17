@@ -70,6 +70,7 @@ private val accent = Color(0xFF5EACEB)
 class MainActivity : ComponentActivity() {
     private val model: RelayViewModel by viewModels()
     private val updates by lazy { UpdateManager(this, BuildConfig.UPDATE_REPO) }
+    private val gateway by lazy { GatewayClient(this) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -92,6 +93,8 @@ class MainActivity : ComponentActivity() {
                 var cameraDialog by remember { mutableStateOf(false) }
                 var showLayouts by remember { mutableStateOf(false) }
                 var showUpdates by remember { mutableStateOf(false) }
+                var showGateway by remember { mutableStateOf(false) }
+                var ptzCamera by remember { mutableStateOf<Camera?>(null) }
                 // These are small UI preferences, not persisted playlist data.
                 // Save them across Activity recreation (including orientation changes).
                 var fullscreen by rememberSaveable { mutableStateOf<Int?>(null) }
@@ -165,6 +168,8 @@ class MainActivity : ComponentActivity() {
                     onFavourite = model::toggleFavourite, onMoveCamera = model::moveCamera,
                     onLayouts = { showLayouts = true },
                     onUpdates = { showUpdates = true },
+                    onGateway = { showGateway = true },
+                    onPtz = { ptzCamera = it },
                     updateAvailable = update.available != null,
                 )
 
@@ -189,6 +194,20 @@ class MainActivity : ComponentActivity() {
                     onImport = { importLayouts.launch(arrayOf("application/json", "*/*")) },
                     onExport = { exportLayouts.launch("RelayView-layouts.json") },
                 )
+                if (showGateway) GatewaySettingsDialog(
+                    client = gateway,
+                    onPull = {
+                        val count = model.importPlaylist(gateway.pullPlaylist())
+                        showList = true
+                        count
+                    },
+                    onPush = { gateway.pushPlaylist(model.playlistM3u()) },
+                    onDismiss = { showGateway = false },
+                )
+                ptzCamera?.let { camera ->
+                    PtzControlsDialog(camera = camera, client = gateway,
+                        onDismiss = { ptzCamera = null })
+                }
                 if (showUpdates) UpdateDialog(
                     state = update,
                     onDismiss = { showUpdates = false },
@@ -211,9 +230,11 @@ private fun RelayScreen(
     onFullscreen: (Int?) -> Unit, onMute: () -> Unit, onPause: () -> Unit,
     onImport: () -> Unit, onExport: () -> Unit, onAdd: () -> Unit, onEdit: (Camera) -> Unit,
     onFavourite: (String) -> Unit, onMoveCamera: (String, Int) -> Unit,
-    onLayouts: () -> Unit, onUpdates: () -> Unit, updateAvailable: Boolean,
+    onLayouts: () -> Unit, onUpdates: () -> Unit, onGateway: () -> Unit,
+    onPtz: (Camera) -> Unit, updateAvailable: Boolean,
 ) {
     var gridMenu by remember { mutableStateOf(false) }
+    var toolsMenu by remember { mutableStateOf(false) }
     Scaffold(
         modifier = Modifier
             .fillMaxSize()
@@ -241,7 +262,25 @@ private fun RelayScreen(
                     }
                     IconButton(onClick = onMute) { Icon(if (muted) Icons.Default.VolumeOff else Icons.Default.VolumeUp, "Mute all") }
                     IconButton(onClick = onPause) { Icon(if (paused) Icons.Default.PlayArrow else Icons.Default.Pause, "Pause all") }
-                    IconButton(onClick = onLayouts) { Icon(Icons.Default.GridView, "Saved layouts") }
+                    val selectedCamera = state.cameras.firstOrNull {
+                        it.url == state.slots.getOrNull(state.selectedSlot)
+                    }
+                    Box {
+                        IconButton(onClick = { toolsMenu = true }) {
+                            Icon(Icons.Default.MoreVert, "Layouts, gateway and PTZ tools")
+                        }
+                        DropdownMenu(expanded = toolsMenu, onDismissRequest = { toolsMenu = false }) {
+                            DropdownMenuItem(text = { Text("Saved layouts") },
+                                onClick = { toolsMenu = false; onLayouts() })
+                            DropdownMenuItem(text = { Text("Gateway / master playlist") },
+                                onClick = { toolsMenu = false; onGateway() })
+                            DropdownMenuItem(
+                                text = { Text("Physical PTZ") },
+                                enabled = !selectedCamera?.attrs?.get("relayview-ptz-camera").isNullOrBlank(),
+                                onClick = { toolsMenu = false; selectedCamera?.let(onPtz) },
+                            )
+                        }
+                    }
                     BadgedBox(badge = { if (updateAvailable) Badge() }) {
                         IconButton(onClick = onUpdates) { Icon(Icons.Default.SystemUpdate, "Updates") }
                     }
@@ -254,7 +293,7 @@ private fun RelayScreen(
             if (fullscreen != null) {
                 // Completely hide the camera list and app toolbar in immersive mode.
                 GridViewer(Modifier.fillMaxSize(), state, fullscreen, muted, paused,
-                    onSelect, onFullscreen, onSwap)
+                    onSelect, onFullscreen, onSwap, onPtz)
             } else if (wide) {
                 Row(Modifier.fillMaxSize()) {
                     if (showList) CameraSidebar(
@@ -263,7 +302,7 @@ private fun RelayScreen(
                         onImport, onExport, onAdd, onEdit, onFavourite, onMoveCamera,
                     )
                     GridViewer(Modifier.weight(1f).fillMaxHeight(), state, fullscreen, muted, paused,
-                        onSelect, onFullscreen, onSwap)
+                        onSelect, onFullscreen, onSwap, onPtz)
                 }
             } else {
                 Column(Modifier.fillMaxSize()) {
@@ -273,7 +312,7 @@ private fun RelayScreen(
                         onImport, onExport, onAdd, onEdit, onFavourite, onMoveCamera,
                     )
                     GridViewer(Modifier.fillMaxWidth().weight(if (showList) 0.52f else 1f), state,
-                        fullscreen, muted, paused, onSelect, onFullscreen, onSwap)
+                        fullscreen, muted, paused, onSelect, onFullscreen, onSwap, onPtz)
                 }
             }
         }
@@ -345,6 +384,7 @@ private fun CameraSidebar(
 private fun GridViewer(
     modifier: Modifier, state: RelayState, fullscreen: Int?, muted: Boolean, paused: Boolean,
     onSelect: (Int) -> Unit, onFullscreen: (Int?) -> Unit, onSwap: (Int, Int) -> Unit,
+    onPtz: (Camera) -> Unit,
 ) {
     val indexByUrl = state.cameras.associateBy { it.url }
     var swapSource by rememberSaveable { mutableStateOf<Int?>(null) }
@@ -374,6 +414,7 @@ private fun GridViewer(
                                     preferSubstream = fullscreen == null && state.rows * state.columns > 1,
                                     compact = fullscreen == null && state.rows * state.columns > 1,
                                     isFullscreen = fullscreen != null,
+                                    onPtz = { camera?.let(onPtz) },
                                     onSelect = {
                                         if (swapSource != null && swapSource != index) {
                                             onSwap(swapSource!!, index); swapSource = null
@@ -404,6 +445,7 @@ private fun CameraTile(
     modifier: Modifier, camera: Camera?, index: Int, selected: Boolean, muted: Boolean, paused: Boolean,
     preferSubstream: Boolean, compact: Boolean, isFullscreen: Boolean,
     onSelect: () -> Unit, onFullscreen: () -> Unit, onSwap: () -> Unit,
+    onPtz: () -> Unit,
 ) {
     val low = camera?.attrs?.get("relayview-substream").orEmpty()
     val streamUrl = if (preferSubstream && (low.startsWith("rtsp://", true) ||
@@ -598,6 +640,9 @@ private fun CameraTile(
         }
         Row(Modifier.align(Alignment.BottomEnd).background(Color(0xCC10151D)), verticalAlignment = Alignment.CenterVertically) {
             SmallIcon(Icons.Default.SwapHoriz, "Swap tile", onSwap)
+            if (!camera?.attrs?.get("relayview-ptz-camera").isNullOrBlank() && !compact) {
+                SmallIcon(Icons.Default.ControlCamera, "Physical PTZ", onPtz)
+            }
             if (!compact) {
                 SmallIcon(Icons.Default.Remove, "Zoom out", { zoom = (zoom - .25f).coerceAtLeast(1f); if (zoom == 1f) offset = Offset.Zero })
                 Text("${(zoom * 100).toInt()}%", style = MaterialTheme.typography.labelSmall)
@@ -627,6 +672,7 @@ private fun CameraEditDialog(camera: Camera?, onDismiss: () -> Unit, onSave: (Ca
     var group by remember(camera) { mutableStateOf(camera?.group.orEmpty()) }
     var notes by remember(camera) { mutableStateOf(camera?.notes.orEmpty()) }
     var substream by remember(camera) { mutableStateOf(camera?.attrs?.get("relayview-substream").orEmpty()) }
+    var frigateCamera by remember(camera) { mutableStateOf(camera?.attrs?.get("relayview-ptz-camera").orEmpty()) }
     AlertDialog(onDismissRequest = onDismiss, title = { Text(if (camera == null) "Add camera" else "Edit camera") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -637,13 +683,24 @@ private fun CameraEditDialog(camera: Camera?, onDismiss: () -> Unit, onSave: (Ca
                 OutlinedTextField(notes, { notes = it }, label = { Text("Notes") }, minLines = 2)
                 OutlinedTextField(substream, { substream = it },
                     label = { Text("Optional H.264 grid substream URL") }, minLines = 2)
+                OutlinedTextField(frigateCamera, { frigateCamera = it },
+                    label = { Text("Frigate PTZ camera ID (optional)") }, singleLine = true)
                 if (onRemove != null) TextButton(onClick = onRemove) { Text("Delete camera", color = MaterialTheme.colorScheme.error) }
             }
         },
-        confirmButton = { TextButton(onClick = {
+        confirmButton = { TextButton(
+            enabled = frigateCamera.isBlank() || Regex("[A-Za-z0-9_-]{1,64}").matches(frigateCamera.trim()),
+            onClick = {
             val attrs = (camera?.attrs ?: emptyMap()).toMutableMap()
             if (substream.isBlank()) attrs.remove("relayview-substream")
             else attrs["relayview-substream"] = substream.trim()
+            if (frigateCamera.isBlank()) attrs.remove("relayview-ptz-camera")
+            else {
+                require(Regex("[A-Za-z0-9_-]{1,64}").matches(frigateCamera.trim())) {
+                    "Frigate camera ID must be letters, numbers, hyphens or underscores"
+                }
+                attrs["relayview-ptz-camera"] = frigateCamera.trim()
+            }
             onSave(Camera(name.trim(), url.trim(), group.trim(), camera?.favorite ?: false, notes.trim(), attrs))
         }) { Text("Save") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },

@@ -27,6 +27,22 @@ jobs:
       - name: Run parser tests
         run: pytest -q
 
+  gateway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install gateway dependencies
+        run: pip install -r gateway/requirements.txt pytest httpx
+      - name: Test gateway (playlist / PTZ / MQTT)
+        run: python -m pytest -q gateway/tests
+      - name: Build gateway Docker image
+        run: docker build -f gateway/Dockerfile -t relayview-gateway:ci .
+      - name: Validate gateway Compose file
+        run: docker compose --env-file gateway/.env.example -f gateway/docker-compose.yml config --quiet
+
   windows:
     needs: test
     runs-on: windows-latest
@@ -78,7 +94,7 @@ jobs:
       # that parser-only tests cannot, before native packaging steps.
       - name: Smoke test Windows Qt grid startup
         shell: powershell
-        run: python -m pytest -q tests/test_grid_startup.py tests/test_pan_controls.py tests/test_playlist_editor_add_remove.py
+        run: python -m pytest -q tests/test_grid_startup.py tests/test_pan_controls.py tests/test_playlist_editor_add_remove.py tests/test_gateway_ui.py
 
       # Reuse the pinned, checksum-verified libmpv DLL across ordinary builds.
       - name: Restore libmpv runtime

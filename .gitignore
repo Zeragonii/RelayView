@@ -17,3 +17,9 @@ android/**/build/
 *.jks
 *.apk
 android-update.json
+
+# RelayView gateway: never commit credentials or camera URL inventories.
+gateway/.env
+gateway/passwordfile
+gateway/master.m3u
+gateway/data/

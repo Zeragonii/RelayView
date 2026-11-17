@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import json
 
-from PySide6.QtCore import QEvent, QSettings, Qt, QTimer, Signal, QUrl
+from PySide6.QtCore import QEvent, QSettings, Qt, QTimer, Signal, QUrl, QStandardPaths
 from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -30,7 +30,8 @@ from PySide6.QtWidgets import (
 from .models import Stream
 from .grid_view import GridSizeDialog, GridView, MAX_GRID_TILES
 from .grid_profiles import validate_profile, resolve_assignments
-from .playlist import load_m3u
+from .playlist import load_m3u, save_m3u
+from .gateway_ui import GatewayDialog, PtzDialog
 from .playlist_editor import PlaylistEditorDialog
 from .mpv_backend import MPVBackend
 from .single_view_zoom import SingleViewZoom
@@ -67,6 +68,7 @@ class MainWindow(QMainWindow):
         self._view_mode = "single"
         self._update_check_thread = None
         self._update_download_thread = None
+        self._ptz_window = None
 
         self.mpv_status.connect(self._set_status)
         try:
@@ -182,6 +184,10 @@ class MainWindow(QMainWindow):
         self.grid_btn.setToolTip("Configure and open a camera grid")
         self.grid_btn.clicked.connect(self.configure_grid_dialog)
         top_l.addWidget(self.grid_btn)
+        self.ptz_btn = QPushButton("PTZ")
+        self.ptz_btn.setToolTip("Physical pan / tilt / optical zoom via Frigate")
+        self.ptz_btn.clicked.connect(self.open_ptz_controls)
+        top_l.addWidget(self.ptz_btn)
 
         self.stream_title = QLabel("Choose a camera", objectName="streamTitle")
         self.stream_title.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -329,6 +335,12 @@ class MainWindow(QMainWindow):
         edit_action.setEnabled(bool(self.settings.value("playlist_path", "")))
         edit_action.triggered.connect(self.edit_playlist)
         menu.addAction(edit_action)
+        gateway_action = QAction("Gateway / master playlist…", self)
+        gateway_action.triggered.connect(self.open_gateway_dialog)
+        menu.addAction(gateway_action)
+        ptz_action = QAction("Physical PTZ controls…", self)
+        ptz_action.triggered.connect(self.open_ptz_controls)
+        menu.addAction(ptz_action)
         menu.addSeparator()
 
         sidebar_action = QAction("Toggle camera list", self)
@@ -488,6 +500,35 @@ class MainWindow(QMainWindow):
             self.settings.setValue("playlist_path", dialog.playlist_path)
             self.load_playlist(dialog.playlist_path, restore_stream=True)
             self.status_text.setText(f"Playlist saved · {len(self.streams)} streams")
+
+    def _apply_master_playlist(self, streams: list[Stream]) -> None:
+        path = str(self.settings.value("playlist_path", ""))
+        if not path:
+            base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+            target = Path(base) / "RelayView-master.m3u"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            path = str(target)
+        save_m3u(path, streams)
+        self.load_playlist(path, restore_stream=True)
+
+    def open_gateway_dialog(self) -> None:
+        dialog = GatewayDialog(self.settings, lambda: list(self.streams),
+                               self._apply_master_playlist, self)
+        dialog.exec()
+
+    def _active_ptz_stream(self) -> Stream | None:
+        if self._view_mode == "grid":
+            tiles = self.grid_view.tiles
+            selected = self.grid_view.active_index
+            return tiles[selected].stream if 0 <= selected < len(tiles) else None
+        return self.streams[self.current_index] if 0 <= self.current_index < len(self.streams) else None
+
+    def open_ptz_controls(self) -> None:
+        if self._ptz_window is None:
+            self._ptz_window = PtzDialog(self.settings, self._active_ptz_stream, self)
+        self._ptz_window.show()
+        self._ptz_window.raise_()
+        self._ptz_window.activateWindow()
 
     def _refresh_list(self) -> None:
         needle = self.search.text().strip().lower()
