@@ -326,7 +326,7 @@ class MainWindow(QMainWindow):
         menu.addAction(reload_action)
 
         edit_action = QAction("Edit playlist…", self)
-        edit_action.setEnabled(bool(self.streams) and bool(self.settings.value("playlist_path", "")))
+        edit_action.setEnabled(bool(self.settings.value("playlist_path", "")))
         edit_action.triggered.connect(self.edit_playlist)
         menu.addAction(edit_action)
         menu.addSeparator()
@@ -480,7 +480,7 @@ class MainWindow(QMainWindow):
 
     def edit_playlist(self) -> None:
         path = str(self.settings.value("playlist_path", ""))
-        if not path or not self.streams:
+        if not path:
             QMessageBox.information(self, "No playlist", "Open a playlist before editing it.")
             return
         dialog = PlaylistEditorDialog(path, self.streams, self)

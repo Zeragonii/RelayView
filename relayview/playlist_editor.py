@@ -36,6 +36,9 @@ class PlaylistEditorDialog(QDialog):
         self.setMinimumSize(760, 500)
         self.playlist_path = playlist_path
         self.streams = list(streams)
+        # Stable row identity survives edited and duplicate camera URLs.
+        self._stream_keys = list(range(len(self.streams)))
+        self._next_stream_key = len(self.streams)
         self._loading_fields = False
 
         root = QVBoxLayout(self)
@@ -45,7 +48,7 @@ class PlaylistEditorDialog(QDialog):
         title = QLabel("Playlist editor", objectName="dialogTitle")
         root.addWidget(title)
         hint = QLabel(
-            "Drag streams to reorder them. Select a stream to edit its metadata; changes are kept in memory until you save.",
+            "Add, remove, or drag cameras to reorder them. Changes are kept in memory until you save.",
             objectName="subtle",
         )
         hint.setWordWrap(True)
@@ -66,6 +69,17 @@ class PlaylistEditorDialog(QDialog):
         self.list_widget.currentRowChanged.connect(self._load_row)
         self.list_widget.model().rowsMoved.connect(self._sync_order_from_list)
         left_l.addWidget(self.list_widget, 1)
+        list_actions = QHBoxLayout()
+        self.add_button = QPushButton("+ Add camera")
+        self.add_button.setObjectName("playlistEditorAddCamera")
+        self.add_button.clicked.connect(self._add_camera)
+        list_actions.addWidget(self.add_button)
+        self.remove_button = QPushButton("Remove selected")
+        self.remove_button.setObjectName("playlistEditorRemoveCamera")
+        self.remove_button.clicked.connect(self._remove_selected)
+        self.remove_button.setEnabled(False)
+        list_actions.addWidget(self.remove_button)
+        left_l.addLayout(list_actions)
         splitter.addWidget(left)
 
         right = QWidget()
@@ -131,27 +145,48 @@ class PlaylistEditorDialog(QDialog):
 
     def _populate(self) -> None:
         self.list_widget.clear()
-        for stream in self.streams:
-            self._add_item(stream)
+        for stream, key in zip(self.streams, self._stream_keys):
+            self._add_item(stream, key)
         if self.streams:
             self.list_widget.setCurrentRow(0)
 
-    def _add_item(self, stream: Stream) -> None:
+    def _add_item(self, stream: Stream, key: int) -> None:
         star = "★  " if stream.favorite else ""
-        text = f"{star}{stream.name}"
+        text = f"{star}{stream.name or 'New camera'}"
         if stream.group:
             text += f"\n{stream.group}"
         item = QListWidgetItem(text)
-        item.setData(Qt.ItemDataRole.UserRole, stream.url)
+        item.setData(Qt.ItemDataRole.UserRole, key)
         tooltip = stream.url
         if stream.notes:
             tooltip += f"\n\n{stream.notes}"
         item.setToolTip(tooltip)
         self.list_widget.addItem(item)
 
+    def _add_camera(self) -> None:
+        stream = Stream(name="", url="")
+        key = self._next_stream_key
+        self._next_stream_key += 1
+        self.streams.append(stream)
+        self._stream_keys.append(key)
+        self._add_item(stream, key)
+        self.list_widget.setCurrentRow(self.list_widget.count() - 1)
+        self.name_edit.setFocus()
+
+    def _remove_selected(self) -> None:
+        row = self.list_widget.currentRow()
+        if not (0 <= row < len(self.streams)):
+            return
+        self.streams.pop(row)
+        self._stream_keys.pop(row)
+        self.list_widget.takeItem(row)
+        self.list_widget.setCurrentRow(min(row, self.list_widget.count() - 1))
+        self._load_row(self.list_widget.currentRow())
+
     def _load_row(self, row: int) -> None:
         self._loading_fields = True
         enabled = 0 <= row < len(self.streams)
+        self.remove_button.setEnabled(enabled)
         for widget in (self.name_edit, self.group_edit, self.url_edit, self.favorite_check, self.notes_edit):
             widget.setEnabled(enabled)
         if enabled:
@@ -178,30 +213,28 @@ class PlaylistEditorDialog(QDialog):
         old = self.streams[row]
         updated = replace(
             old,
-            name=self.name_edit.text().strip() or old.name,
+            name=self.name_edit.text().strip(),
             group=self.group_edit.text().strip(),
-            url=self.url_edit.text().strip() or old.url,
+            url=self.url_edit.text().strip(),
             favorite=self.favorite_check.isChecked(),
             notes=self.notes_edit.toPlainText().strip(),
         )
         self.streams[row] = updated
         item = self.list_widget.item(row)
         star = "★  " if updated.favorite else ""
-        item.setText(f"{star}{updated.name}" + (f"\n{updated.group}" if updated.group else ""))
-        item.setData(Qt.ItemDataRole.UserRole, updated.url)
+        item.setText(f"{star}{updated.name or 'New camera'}" + (f"\n{updated.group}" if updated.group else ""))
         item.setToolTip(updated.url + (f"\n\n{updated.notes}" if updated.notes else ""))
 
     def _sync_order_from_list(self, *_args) -> None:
-        # rowsMoved fires after the QListWidget has completed its internal move.
-        urls = [self.list_widget.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list_widget.count())]
-        remaining = list(self.streams)
-        reordered: list[Stream] = []
-        for url in urls:
-            match_index = next((i for i, stream in enumerate(remaining) if stream.url == url), None)
-            if match_index is not None:
-                reordered.append(remaining.pop(match_index))
-        reordered.extend(remaining)
-        self.streams = reordered
+        # QListWidget finishes the internal move before rowsMoved fires. Use
+        # stable IDs instead of URLs: different cameras may share a stream URL.
+        keys = [self.list_widget.item(i).data(Qt.ItemDataRole.UserRole)
+                for i in range(self.list_widget.count())]
+        streams_by_key = dict(zip(self._stream_keys, self.streams))
+        if len(keys) != len(streams_by_key) or set(keys) != set(streams_by_key):
+            return
+        self.streams = [streams_by_key[key] for key in keys]
+        self._stream_keys = keys
         self._load_row(self.list_widget.currentRow())
 
     def _validate(self) -> bool:
