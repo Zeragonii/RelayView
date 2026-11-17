@@ -1,0 +1,26 @@
+services:
+  relayview-gateway:
+    build:
+      context: ..
+      dockerfile: gateway/Dockerfile
+    container_name: relayview-gateway
+    restart: unless-stopped
+    environment:
+      RELAYVIEW_API_TOKEN: "${RELAYVIEW_API_TOKEN:?Set a strong API token in gateway/.env}"
+      MQTT_HOST: "${MQTT_HOST:?Set the MQTT broker host}"
+      MQTT_PORT: "${MQTT_PORT:-1883}"
+      MQTT_USERNAME: "${MQTT_USERNAME:-}"
+      MQTT_PASSWORD: "${MQTT_PASSWORD:-}"
+      MQTT_TLS: "${MQTT_TLS:-false}"
+      MQTT_TOPIC_PREFIX: "${MQTT_TOPIC_PREFIX:-frigate}"
+      FRIGATE_PTZ_CAMERAS: "${FRIGATE_PTZ_CAMERAS:-}"
+      PTZ_STOP_SECONDS: "${PTZ_STOP_SECONDS:-0.9}"
+      PLAYLIST_PATH: /data/master.m3u
+    ports:
+      - "127.0.0.1:8098:8080"
+    volumes:
+      - relayview-data:/data
+    # Reverse-proxy via NPM on a trusted Docker network, or use an SSH tunnel.
+    # Do NOT publish port 8098 to the internet without HTTPS and auth.
+volumes:
+  relayview-data:
