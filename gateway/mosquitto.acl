@@ -1,0 +1,8 @@
+# Example ACLs for the optional dedicated Mosquitto broker.
+# Frigate needs broad access to its MQTT topics.
+user frigate
+topic readwrite frigate/#
+
+# RelayView gateway can only issue the Frigate PTZ commands.
+user relayview
+topic write frigate/+/ptz
