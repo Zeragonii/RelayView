@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QTimer, Qt, QUrl, QStandardPaths
+from PySide6.QtCore import QByteArray, QEvent, QSettings, QTimer, Qt, QUrl
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QDialog, QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
@@ -51,10 +51,10 @@ class GatewayHttp:
         if method == "GET":
             reply = self.manager.get(request)
         elif method == "PUT":
-            reply = self.manager.put(request, body)
+            reply = self.manager.put(request, QByteArray(body))
         elif method == "POST":
             request.setHeader(QNetworkRequest.KnownHeaders.ContentTypeHeader, "application/json")
-            reply = self.manager.post(request, body)
+            reply = self.manager.post(request, QByteArray(body))
         else:
             raise ValueError("Unsupported HTTP method")
         self._pending.add(reply)
@@ -302,6 +302,17 @@ class PtzDialog(QDialog):
             return
         self._stop()
         self._command(camera_ptz_id(self.current_stream()), "preset_" + value)
+
+    def changeEvent(self, event):
+        # Losing focus while the mouse is held must not leave the timer sending
+        # MOVE heartbeats indefinitely (for example when Alt-Tab is pressed).
+        if event.type() == QEvent.Type.ActivationChange and not self.isActiveWindow():
+            self._stop()
+        super().changeEvent(event)
+
+    def hideEvent(self, event):
+        self._stop()
+        super().hideEvent(event)
 
     def closeEvent(self, event):
         self._stop()
