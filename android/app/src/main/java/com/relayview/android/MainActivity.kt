@@ -55,6 +55,8 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.rtsp.RtspMediaSource
+import androidx.media3.exoplayer.video.VideoFrameMetadataListener
+import java.util.concurrent.atomic.AtomicLong
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -408,7 +410,7 @@ private fun CameraTile(
         low.startsWith("http://", true) || low.startsWith("https://", true))) low else camera?.url
     var zoom by rememberSaveable(streamUrl) { mutableFloatStateOf(1f) }
     var offset by remember(streamUrl) { mutableStateOf(Offset.Zero) }
-    var status by remember(streamUrl) { mutableStateOf("No camera") }
+    var status by remember(streamUrl) { mutableStateOf(if (streamUrl == null) "No camera" else "Connecting…") }
     var retries by remember(streamUrl) { mutableIntStateOf(0) }
     var hasFocus by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -433,46 +435,106 @@ private fun CameraTile(
         player?.let { it.volume = if (muted) 0f else 1f; it.playWhenReady = !paused }
     }
     DisposableEffect(player, lifecycle) {
+        val policy = StreamRecoveryPolicy()
+        val lastFrameMs = AtomicLong(0L)
+        var attemptStartedMs = android.os.SystemClock.elapsedRealtime()
         var pendingRetry: Job? = null
-        var bufferStart = 0L
-        fun recover() {
-            if (player == null || pendingRetry?.isActive == true) return
+        var wasActive = false
+
+        // Called on ExoPlayer's playback thread. Only update the atomic timestamp here;
+        // Compose state and player operations stay on the main/application thread.
+        val frameListener = VideoFrameMetadataListener { _, _, _, _ ->
+            lastFrameMs.set(android.os.SystemClock.elapsedRealtime())
+        }
+        player?.addVideoFrameMetadataListener(frameListener)
+
+        fun recover(reason: String) {
+            if (player == null || pendingRetry?.isActive == true || currentPaused) return
             status = "Reconnecting…"
+            val delayMs = policy.retryDelayMs(retries)
+            retries++
+            android.util.Log.w("RelayViewPlayer", "Tile $index: $reason; retry #$retries in ${delayMs}ms")
             pendingRetry = scope.launch {
-                delay((1_000L shl retries.coerceAtMost(5)).coerceAtMost(30_000L))
-                retries++
+                delay(delayMs)
+                // An RTSP connection can recover while we are waiting. Don't break
+                // a stream that has started delivering frames again.
+                val now = android.os.SystemClock.elapsedRealtime()
+                val lastFrame = lastFrameMs.get()
+                if (lastFrame >= attemptStartedMs && now - lastFrame < 5_000L) {
+                    retries = 0
+                    status = ""
+                    return@launch
+                }
+                if (currentPaused || !lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                    status = "Paused"
+                    return@launch
+                }
+                // A fresh RTSP DESCRIBE/SETUP is essential. Calling prepare()
+                // on an already-READY player doesn't necessarily reconnect.
+                attemptStartedMs = android.os.SystemClock.elapsedRealtime()
+                lastFrameMs.set(0L)
+                status = "Waiting for video…"
+                player.stop()
                 player.seekToDefaultPosition()
                 player.prepare()
-                player.playWhenReady = !currentPaused
+                player.playWhenReady = true
             }
         }
+
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 when (playbackState) {
-                    Player.STATE_READY -> { status = ""; retries = 0; bufferStart = 0L; pendingRetry?.cancel() }
-                    Player.STATE_BUFFERING -> { status = "Buffering…"; if (bufferStart == 0L) bufferStart = android.os.SystemClock.elapsedRealtime() }
-                    Player.STATE_ENDED -> recover()
+                    Player.STATE_READY -> {
+                        // READY can mean a black video surface with no new frames.
+                        // Only the frame watchdog marks the stream as healthy.
+                        if (lastFrameMs.get() < attemptStartedMs &&
+                            pendingRetry?.isActive != true) status = "Waiting for video…"
+                    }
+                    Player.STATE_BUFFERING -> {
+                        if (pendingRetry?.isActive != true) status = "Buffering…"
+                    }
+                    Player.STATE_ENDED -> recover("stream ended")
                 }
             }
             override fun onPlayerError(error: PlaybackException) {
-                // Never render RTSP URLs; they may contain passwords.
-                status = "Stream error · retrying"
-                recover()
+                // Never log URLs or error messages: camera URLs can contain passwords.
+                recover("playback error code ${error.errorCode}")
             }
         }
         player?.addListener(listener)
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_STOP) player?.pause()
-            if (event == Lifecycle.Event.ON_START && !currentPaused) player?.play()
+            if (event == Lifecycle.Event.ON_START && !currentPaused) {
+                if (player?.playbackState == Player.STATE_IDLE) player.prepare()
+                player?.play()
+            }
         }
         lifecycle.addObserver(observer)
         val watchdog = scope.launch {
             while (true) {
-                delay(5000)
-                if (player?.playbackState == Player.STATE_BUFFERING && bufferStart != 0L &&
-                    android.os.SystemClock.elapsedRealtime() - bufferStart > 20_000) {
-                    bufferStart = 0L
-                    recover()
+                delay(2_000)
+                if (player == null) continue
+                val active = !currentPaused && lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+                if (!active) {
+                    wasActive = false
+                    continue
+                }
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (!wasActive) {
+                    // Suspend the watchdog clock during app backgrounding / user pause.
+                    attemptStartedMs = now
+                    lastFrameMs.set(0L)
+                    wasActive = true
+                    if (player.playbackState == Player.STATE_IDLE) player.prepare()
+                }
+                val frameMs = lastFrameMs.get()
+                if (frameMs >= attemptStartedMs && now - frameMs < policy.freezeTimeoutMs) {
+                    if (pendingRetry?.isActive == true) pendingRetry?.cancel()
+                    if (retries != 0) retries = 0
+                    if (status.isNotEmpty()) status = ""
+                } else if (pendingRetry?.isActive != true &&
+                    policy.shouldRecover(now, attemptStartedMs, frameMs)) {
+                    recover(if (frameMs < attemptStartedMs) "no first video frame" else "video frames stalled")
                 }
             }
         }
@@ -481,6 +543,7 @@ private fun CameraTile(
             watchdog.cancel()
             pendingRetry?.cancel()
             player?.removeListener(listener)
+            player?.removeVideoFrameMetadataListener(frameListener)
             player?.release()
         }
     }
