@@ -38,6 +38,10 @@ jobs:
         run: pip install -r gateway/requirements.txt pytest httpx
       - name: Test gateway (playlist / PTZ / MQTT)
         run: python -m pytest -q gateway/tests
+      - name: Build gateway Docker image
+        run: docker build -f gateway/Dockerfile -t relayview-gateway:ci .
+      - name: Validate gateway Compose file
+        run: docker compose --env-file gateway/.env.example -f gateway/docker-compose.yml config --quiet
 
   windows:
     needs: test
